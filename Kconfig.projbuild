@@ -1,0 +1,107 @@
+menu "fpr"
+    config FPR_ENABLE_LEGACY_PROTOCOL
+        bool "Enable Legacy Protocol Support"
+        default y
+        help
+            Enable support for legacy FPR protocol.
+            This allows communication with older devices using the previous protocol version.
+            Disable to save memory if legacy support is not needed.
+    
+    config FPR_RECONNECT_TASK_CORE_PIN_VALUE
+        int "Reconnect Task Core Pin Value"
+        default 0
+        help
+            Set the core pin value for the FPR reconnect task.
+            This determines which CPU core the reconnect task will run on.
+
+    config FPR_QUEUE_SEND_TIMEOUT_MS
+        int "FPR Queue Send Timeout (ms)"
+        default 100
+        range 0 10000
+        help
+            Set the timeout in milliseconds for sending to the FPR queue.
+    
+    config FPR_BROADCAST_RETRY_INTERVAL_MS
+        int "FPR Broadcast Retry Interval (ms)"
+        default 5000
+        range 1000 60000
+        help
+            Set the interval in milliseconds for retrying FPR broadcast messages.
+        
+    config FPR_CLIENT_CONNECTION_MAX_WAIT_MS
+        int "FPR Client Connection Max Wait (ms)"
+        default 10000
+        range 1000 60000
+        help
+            Set the maximum wait time in milliseconds for FPR client connections.
+    
+    config FPR_CLIENT_BROADCAST_INTERVAL_MS
+        int "FPR Client Broadcast Interval (ms)"
+        default 1000
+        range 500 10000
+        help
+            Set the interval in milliseconds for FPR client broadcast messages.
+
+    config FPR_CLIENT_WAIT_CHECK_INTERVAL_MS
+        int "FPR Client Wait Check Interval (ms)"
+        default 500
+        range 100 5000
+        help
+            Set the interval in milliseconds for checking FPR client wait status.
+
+    config FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS
+        int "FPR Manual Connect Retry Interval (ms)"
+        default 3000
+        range 1000 60000
+        help
+            Set the interval in milliseconds for retrying manual FPR connections.
+
+    config FPR_HOST_SCAN_BROADCAST_INTERVAL_MS
+        int "FPR Host Scan Broadcast Interval (ms)"
+        default 2000
+        range 500 10000
+        help
+            Set the interval in milliseconds for FPR host scan broadcast messages.
+
+    config FPR_HOST_SCAN_POLL_INTERVAL_MS
+        int "FPR Host Scan Poll Interval (ms)"
+        default 1000
+        range 500 10000
+        help
+            Set the interval in milliseconds for polling FPR host scan status.
+
+    config FPR_RECONNECT_TIMEOUT_MS
+        int "FPR Reconnect Timeout (ms)"
+        default 15000
+        range 1000 60000
+        help
+            Set the timeout in milliseconds for FPR reconnection attempts.
+        
+    config FPR_KEEPALIVE_INTERVAL_MS
+        int "FPR Keepalive Interval (ms)"
+        default 5000
+        range 1000 60000
+        help
+            Set the interval in milliseconds for FPR keepalive messages.
+
+    config FPR_DEBUG
+        bool "Enable FPR Debug Output"
+        default n
+        help
+            Enable debug output for the FPR component.
+            Useful for troubleshooting and development.
+
+    config FPR_TASK_PRIORITY
+        int "FPR Task Priority"
+        default 2
+        range 0 25
+        help
+            Set the priority for the FPR tasks.
+
+    config FPR_TASK_STACK_SIZE
+        int "FPR Task Stack Size"
+        default 4096
+        range 1024 16384
+        help
+            Set the stack size for the FPR tasks.
+endmenu

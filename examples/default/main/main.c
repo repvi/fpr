@@ -1,0 +1,96 @@
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "fpr/fpr.h"
+#include "esp_log.h"
+#include "esp_system.h"
+
+static const char *TAG = "FPR_DEFAULT_MAIN";
+
+#define FPR_TEST_HOST 1
+//#define FPR_TEST_CLIENT 1
+//#define FPR_TEST_EXTENDER 1
+#define FPR_TEST_AUTO_START 1
+
+/*
+ * Test selection macros (choose one):
+ * - Define `FPR_TEST_HOST` to build the host test into main
+ * - Define `FPR_TEST_CLIENT` to build the client test into main
+ * - Define `FPR_TEST_EXTENDER` to build the extender test into main
+ *
+ * Optionally define `FPR_TEST_AUTO_START` to automatically start the
+ * selected test from `app_main()` with sane defaults.
+ *
+ * Define these via your build system. Example (in `main/CMakeLists.txt`):
+ *   target_compile_definitions(${COMPONENT_LIB} PRIVATE FPR_TEST_HOST)
+ */
+
+#if defined(FPR_TEST_HOST) && (defined(FPR_TEST_CLIENT) || defined(FPR_TEST_EXTENDER))
+#error "Define only one of FPR_TEST_HOST, FPR_TEST_CLIENT, FPR_TEST_EXTENDER"
+#endif
+#if defined(FPR_TEST_CLIENT) && defined(FPR_TEST_EXTENDER)
+#error "Define only one of FPR_TEST_HOST, FPR_TEST_CLIENT, FPR_TEST_EXTENDER"
+#endif
+
+#if defined(FPR_TEST_HOST)
+#include "test_fpr_host.h"
+#elif defined(FPR_TEST_CLIENT)
+#include "test_fpr_client.h"
+
+#elif defined(FPR_TEST_EXTENDER)
+#include "test_fpr_extender.h"
+#endif
+
+
+void app_main() 
+{
+#if defined(FPR_TEST_HOST)
+#ifdef FPR_TEST_AUTO_START
+    {
+        fpr_host_test_config_t cfg = {
+            .auto_mode = true,
+            .max_peers = 2,
+            .echo_enabled = true
+        };
+        esp_err_t _err = fpr_host_test_start(&cfg);
+        if (_err != ESP_OK) {
+            ESP_LOGE(TAG, "fpr_host_test_start failed: %d", _err);
+        } else {
+            ESP_LOGI(TAG, "FPR host test started (AUTO)");
+        }
+    }
+#else
+    ESP_LOGI(TAG, "FPR host test compiled in; define FPR_TEST_AUTO_START to auto-start");
+#endif
+#elif defined(FPR_TEST_CLIENT)
+#ifdef FPR_TEST_AUTO_START
+    {
+        fpr_client_test_config_t cfg = {
+            .auto_mode = true,
+            .scan_duration_ms = 5000,
+            .message_interval_ms = 1000
+        };
+        esp_err_t _err = fpr_client_test_start(&cfg);
+        if (_err != ESP_OK) {
+            ESP_LOGE(TAG, "fpr_client_test_start failed: %d", _err);
+        } else {
+            ESP_LOGI(TAG, "FPR client test started (AUTO)");
+        }
+    }
+#else
+    ESP_LOGI(TAG, "FPR client test compiled in; define FPR_TEST_AUTO_START to auto-start");
+#endif
+#elif defined(FPR_TEST_EXTENDER)
+#ifdef FPR_TEST_AUTO_START
+    {
+        esp_err_t _err = fpr_extender_test_start();
+        if (_err != ESP_OK) {
+            ESP_LOGE(TAG, "fpr_extender_test_start failed: %d", _err);
+        } else {
+            ESP_LOGI(TAG, "FPR extender test started (AUTO)");
+        }
+    }
+#else
+    ESP_LOGI(TAG, "FPR extender test compiled in; define FPR_TEST_AUTO_START to auto-start");
+#endif
+#endif
+}

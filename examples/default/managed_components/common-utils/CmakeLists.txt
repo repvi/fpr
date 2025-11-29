@@ -1,0 +1,32 @@
+set(LIB_SOURCES
+    "adc_events.c"
+    "cd4051.c"
+    "memcore/mem_pool.c"
+    "memcore/memcore.c"
+    "genlist.c"
+    "hashmap_presets.c"
+    "hashmap.c"
+    "version_control.c"
+)
+
+set(STANDARD_SOURCES
+    "time.c"
+)
+
+list(TRANSFORM LIB_SOURCES PREPEND "lib/")
+list(TRANSFORM STANDARD_SOURCES PREPEND "standard/")
+
+idf_component_register(
+    SRCS 
+        ${LIB_SOURCES} 
+        ${STANDARD_SOURCES}
+    INCLUDE_DIRS 
+        "lib/include"
+        "standard/include"
+    
+    REQUIRES
+        esp_timer
+        freertos
+        driver
+        esp_adc
+)

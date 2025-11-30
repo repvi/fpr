@@ -3,14 +3,22 @@
 #include "fpr/fpr.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "FPR_DEFAULT_MAIN";
 
-#define FPR_TEST_HOST 1
-//#define FPR_TEST_CLIENT 1
-//#define FPR_TEST_EXTENDER 1
-#define FPR_TEST_AUTO_START 1
-
+#ifdef CONFIG_FPR_TEST_HOST
+#define FPR_TEST_HOST CONFIG_FPR_TEST_HOST
+#endif
+#ifdef CONFIG_FPR_TEST_CLIENT
+#define FPR_TEST_CLIENT CONFIG_FPR_TEST_CLIENT
+#endif
+#ifdef CONFIG_FPR_TEST_EXTENDER
+#define FPR_TEST_EXTENDER CONFIG_FPR_TEST_EXTENDER
+#endif
+#ifdef CONFIG_FPR_TEST_AUTO_START
+#define FPR_TEST_AUTO_START CONFIG_FPR_TEST_AUTO_START
+#endif
 /*
  * Test selection macros (choose one):
  * - Define `FPR_TEST_HOST` to build the host test into main
@@ -40,8 +48,7 @@ static const char *TAG = "FPR_DEFAULT_MAIN";
 #include "test_fpr_extender.h"
 #endif
 
-
-void app_main() 
+void app_main()
 {
 #if defined(FPR_TEST_HOST)
 #ifdef FPR_TEST_AUTO_START

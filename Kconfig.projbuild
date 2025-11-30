@@ -104,4 +104,41 @@ menu "fpr"
         range 1024 16384
         help
             Set the stack size for the FPR tasks.
+    config FPR_TEST_MODE
+        bool "Enable FPR Test Mode"
+        default n
+        help
+            Enable test mode for the FPR component.
+            This mode is intended for development and testing purposes only.
+    
+    choice FPR_TEST_ROLE
+        prompt "Select FPR Test Role"
+        depends on FPR_TEST_MODE
+        default FPR_TEST_HOST
+        help
+            Select the role for FPR testing.
+            Choose between Host, Client, or Extender roles for testing purposes.
+        config FPR_TEST_HOST 
+            bool "Host"
+            help
+                Enable the FPR test host role.
+
+        config FPR_TEST_CLIENT 
+            bool "Client"
+            help
+                Enable the FPR test client role.
+
+        config FPR_TEST_EXTENDER 
+            bool "Extender"
+            help
+                Enable the FPR test extender role.
+    endchoice 
+
+    config FPR_TEST_AUTO_START
+        bool "Enable FPR Test Auto Start"
+        default y
+        depends on FPR_TEST_MODE
+        help
+            Automatically start the FPR test on boot.
+            Useful for automated testing scenarios.
 endmenu

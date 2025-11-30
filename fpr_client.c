@@ -99,6 +99,11 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
 
 void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
+    // Check if network is paused
+    if (fpr_net.paused) {
+        return;  // Drop all packets when paused
+    }
+    
     if (!is_fpr_package_compatible(len)) {
         return;
     }

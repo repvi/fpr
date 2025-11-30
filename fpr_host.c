@@ -212,6 +212,11 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
              len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
     #endif
     
+    // Check if network is paused
+    if (fpr_net.paused) {
+        return;  // Drop all packets when paused
+    }
+    
     if (!is_fpr_package_compatible(len)) {
         ESP_LOGW(TAG, "Packet size mismatch - expected: %d, got: %d", sizeof(fpr_package_t), len);
         return;

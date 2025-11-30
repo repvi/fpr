@@ -113,6 +113,8 @@ typedef struct {
     bool host_pwk_valid;              // Host PWK has been generated
     TaskHandle_t loop_task;
     TaskHandle_t reconnect_task;
+    fpr_network_state_t state;        // Current network state
+    bool paused;                      // Paused flag
 } fpr_network_t;
 
 

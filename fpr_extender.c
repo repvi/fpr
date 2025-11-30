@@ -97,6 +97,12 @@ static esp_err_t fpr_send_data_full_control(uint8_t *peer_address, void *data, i
 
 void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
+    // Check if network is paused
+    if (fpr_net.paused) {
+        fpr_net.stats.packets_dropped++;
+        return;  // Drop all packets when paused
+    }
+    
     if (!is_fpr_package_compatible(len)) {
         fpr_net.stats.packets_dropped++;
         return;

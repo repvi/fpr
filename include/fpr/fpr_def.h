@@ -11,6 +11,14 @@ typedef enum {
     FPR_VISIBILITY_PRIVATE
 } fpr_visibility_t;
 
+typedef enum {
+    FPR_STATE_UNINITIALIZED = 0,  // Not initialized
+    FPR_STATE_INITIALIZED,        // Initialized but not started
+    FPR_STATE_STARTED,            // Started and running
+    FPR_STATE_PAUSED,             // Paused (can be resumed)
+    FPR_STATE_STOPPED             // Stopped (can be restarted)
+} fpr_network_state_t;
+
 typedef int fpr_package_id_t;
 
 typedef enum {

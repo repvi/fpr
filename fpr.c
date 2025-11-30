@@ -155,6 +155,10 @@ esp_err_t fpr_network_init(const char *name)
 
     hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals);
     ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "Failed to initialize ESP-NOW");
+    
+    fpr_net.state = FPR_STATE_INITIALIZED;
+    fpr_net.paused = false;
+    
     ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ")", fpr_net.name, MAC2STR(fpr_net.mac));
     return ESP_OK;
 }
@@ -168,6 +172,7 @@ esp_err_t fpr_network_deinit(void)
     }
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
+    fpr_net.state = FPR_STATE_UNINITIALIZED;
     memset(&fpr_net, 0, sizeof(fpr_net));
     return esp_now_deinit();
 }
@@ -196,13 +201,24 @@ esp_err_t fpr_network_start()
     fpr_net.receiver = _handle_client_discovery;
     fpr_network_set_mode(FPR_MODE_CLIENT);
     
+    fpr_net.state = FPR_STATE_STARTED;
+    fpr_net.paused = false;
+    
     ESP_LOGI(TAG, "FPR Network started with MAC: " MACSTR, MAC2STR(fpr_net.mac));
     return ESP_OK;
 }
 
 esp_err_t fpr_network_stop()
 {
-    return esp_now_deinit();
+    if (fpr_net.state == FPR_STATE_STOPPED || fpr_net.state == FPR_STATE_UNINITIALIZED) {
+        ESP_LOGW(TAG, "Network already stopped or not initialized");
+        return ESP_OK;
+    }
+    
+    fpr_net.state = FPR_STATE_STOPPED;
+    fpr_net.paused = false;
+    ESP_LOGI(TAG, "Network stopped");
+    return ESP_OK;
 }
 
 static esp_err_t fpr_network_override_protocol(esp_now_send_cb_t sender, esp_now_recv_cb_t receiver)
@@ -348,6 +364,12 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
 {
     ESP_RETURN_ON_FALSE(data != NULL && size > 0, ESP_ERR_INVALID_ARG, TAG, "Invalid data or size");
     ESP_RETURN_ON_FALSE(options != NULL, ESP_ERR_INVALID_ARG, TAG, "Options cannot be NULL");
+    
+    // Check if network is paused
+    if (fpr_net.paused) {
+        ESP_LOGW(TAG, "Network is paused - send operation blocked");
+        return ESP_ERR_INVALID_STATE;
+    }
     
     const size_t PROTOCOL_SIZE = sizeof(((fpr_package_t *)0)->protocol);
     int data_remaining = size;
@@ -761,4 +783,157 @@ esp_err_t fpr_network_stop_reconnect_task(void)
 bool fpr_network_is_reconnect_task_running(void)
 {
     return (fpr_net.reconnect_task != NULL);
+}
+
+// ========== NETWORK STATE MANAGEMENT ==========
+
+esp_err_t fpr_network_pause(void)
+{
+    if (fpr_net.state != FPR_STATE_STARTED) {
+        ESP_LOGW(TAG, "Network not started, cannot pause");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    fpr_net.paused = true;
+    fpr_net.state = FPR_STATE_PAUSED;
+    ESP_LOGI(TAG, "Network paused");
+    return ESP_OK;
+}
+
+esp_err_t fpr_network_resume(void)
+{
+    if (fpr_net.state != FPR_STATE_PAUSED) {
+        ESP_LOGW(TAG, "Network not paused, cannot resume");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    fpr_net.paused = false;
+    fpr_net.state = FPR_STATE_STARTED;
+    ESP_LOGI(TAG, "Network resumed");
+    return ESP_OK;
+}
+
+fpr_network_state_t fpr_network_get_state(void)
+{
+    return fpr_net.state;
+}
+
+// ========== PEER MANAGEMENT ENHANCEMENTS ==========
+
+typedef struct {
+    const char *name;
+    uint8_t *mac_out;
+    bool found;
+} peer_name_search_ctx_t;
+
+static void _find_peer_by_name_callback(void *key, void *value, void *user_data)
+{
+    (void)key;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    peer_name_search_ctx_t *ctx = (peer_name_search_ctx_t *)user_data;
+    
+    if (peer && !ctx->found) {
+        if (strncmp(peer->name, ctx->name, PEER_NAME_MAX_LENGTH) == 0) {
+            memcpy(ctx->mac_out, peer->peer_info.peer_addr, MAC_ADDRESS_LENGTH);
+            ctx->found = true;
+        }
+    }
+}
+
+esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out)
+{
+    ESP_RETURN_ON_FALSE(peer_name != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer name is NULL");
+    ESP_RETURN_ON_FALSE(mac_out != NULL, ESP_ERR_INVALID_ARG, TAG, "MAC output buffer is NULL");
+    
+    peer_name_search_ctx_t ctx = {
+        .name = peer_name,
+        .mac_out = mac_out,
+        .found = false
+    };
+    
+    hashmap_foreach(&fpr_net.peers_map, _find_peer_by_name_callback, &ctx);
+    
+    if (!ctx.found) {
+        return ESP_ERR_NOT_FOUND;
+    }
+    
+    return ESP_OK;
+}
+
+static void _clear_all_peers_callback(void *key, void *value, void *user_data)
+{
+    (void)user_data;
+    uint8_t *mac = (uint8_t *)key;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    
+    if (peer) {
+        // Remove from ESP-NOW
+        esp_now_del_peer(mac);
+        
+        // Free response queue if it exists
+        if (peer->response_queue != NULL) {
+            vQueueDelete(peer->response_queue);
+        }
+    }
+}
+
+esp_err_t fpr_clear_all_peers(void)
+{
+    size_t peer_count = hashmap_size(&fpr_net.peers_map);
+    
+    if (peer_count == 0) {
+        ESP_LOGI(TAG, "No peers to clear");
+        return ESP_OK;
+    }
+    
+    // Clean up each peer
+    hashmap_foreach(&fpr_net.peers_map, _clear_all_peers_callback, NULL);
+    
+    // Clear the hashmap
+    hashmap_clear(&fpr_net.peers_map);
+    
+    ESP_LOGI(TAG, "Cleared %zu peers", peer_count);
+    return ESP_OK;
+}
+
+bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms)
+{
+    ESP_RETURN_ON_FALSE(peer_mac != NULL, false, TAG, "Peer MAC is NULL");
+    
+    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    if (peer == NULL) {
+        ESP_LOGW(TAG, "Peer not found in peer map");
+        return false;
+    }
+    
+    // Check if peer was recently seen (within timeout)
+    int64_t now_us = esp_timer_get_time();
+    int64_t age_us = now_us - peer->last_seen;
+    uint64_t age_ms = (uint64_t)US_TO_MS(age_us);
+    
+    if (age_ms <= timeout_ms) {
+        return true;
+    }
+    
+    // Send a ping (device info) and check response
+    esp_err_t err = fpr_network_send_device_info(peer_mac);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to send ping to peer: %s", esp_err_to_name(err));
+        return false;
+    }
+    
+    // Wait for response by checking if last_seen timestamp updates
+    TickType_t start = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    int64_t initial_last_seen = peer->last_seen;
+    
+    while ((xTaskGetTickCount() - start) < timeout_ticks) {
+        peer = _get_peer_from_map(peer_mac);
+        if (peer && peer->last_seen > initial_last_seen) {
+            return true;  // Peer responded
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));  // Small delay between checks
+    }
+    
+    return false;  // Timeout - peer did not respond
 }

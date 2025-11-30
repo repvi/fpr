@@ -76,6 +76,25 @@ esp_err_t fpr_network_start();
 esp_err_t fpr_network_stop();
 
 /**
+ * @brief Pause the FPR network without full stop.
+ * @return ESP_OK on success, error code otherwise.
+ * @note Paused network can be resumed with fpr_network_resume(). Connections are maintained.
+ */
+esp_err_t fpr_network_pause(void);
+
+/**
+ * @brief Resume the FPR network after pause.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if not paused.
+ */
+esp_err_t fpr_network_resume(void);
+
+/**
+ * @brief Get the current network state.
+ * @return Network state (UNINITIALIZED, INITIALIZED, STARTED, PAUSED, STOPPED).
+ */
+fpr_network_state_t fpr_network_get_state(void);
+
+/**
  * @brief Set the network operating mode.
  * @param mode Operating mode (FPR_MODE_CLIENT, FPR_MODE_HOST, FPR_MODE_EXTENDER, or FPR_MODE_BROADCAST).
  * @note Must be called before fpr_network_start(). Changing mode while network is running requires stop/start cycle.
@@ -170,6 +189,30 @@ esp_err_t fpr_network_broadcast_device_info();
  * @return Count of discovered peers
  */
 int fpr_network_get_peer_count();
+
+/**
+ * @brief Find a peer by name.
+ * @param peer_name Name of the peer to find.
+ * @param mac_out Buffer to store peer MAC address (6 bytes) if found.
+ * @return ESP_OK if peer found, ESP_ERR_NOT_FOUND otherwise.
+ */
+esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out);
+
+/**
+ * @brief Remove all peers from the network.
+ * @return ESP_OK on success, error code otherwise.
+ * @note This clears the entire peer table.
+ */
+esp_err_t fpr_clear_all_peers(void);
+
+/**
+ * @brief Check if a specific peer is currently reachable.
+ * @param peer_mac MAC address of the peer to check.
+ * @param timeout_ms Maximum time to wait for response (milliseconds).
+ * @return true if peer responded, false if timeout or unreachable.
+ * @note Sends a ping message and waits for acknowledgment.
+ */
+bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms);
 
 /**
  * @brief Check if client is connected to a host.

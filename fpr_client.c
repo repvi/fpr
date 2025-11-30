@@ -60,6 +60,21 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
         return;
     }
 
+    // In manual mode with selection callback, ask application if we should connect
+    if (fpr_net.client_config.connection_mode == FPR_CONNECTION_MANUAL && 
+        fpr_net.client_config.selection_cb != NULL) {
+        bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+        if (!should_connect) {
+            #if (FPR_DEBUG == 1)
+            ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);
+            #endif
+            // Still add as discovered but don't initiate connection
+            _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+            return;
+        }
+        ESP_LOGI(TAG, "Application approved connection to host: %s", info->name);
+    }
+
     // Add as discovered FIRST (this registers the peer with ESP-NOW)
     esp_err_t err = _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
     
@@ -75,7 +90,7 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
         if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
             ESP_LOGI(TAG, "Host discovered: %s (waiting for PWK)", info->name);
         } else {
-            ESP_LOGI(TAG, "Host discovered: %s (manual connection required)", info->name);
+            ESP_LOGI(TAG, "Host discovered: %s (manual connection approved)", info->name);
         }
     } else {
         ESP_LOGE(TAG, "Failed to add discovered host: %s", esp_err_to_name(err));

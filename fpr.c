@@ -72,10 +72,6 @@ static esp_now_peer_info_t broadcast_info;
 
 static const char *TAG = "fpr";
 
-// private structure for peer filtering
-
-// Forward declarations for handler functions
-
 // ========== INTERNAL FUNCTIONS ==========
 
 static esp_err_t _remove_peer_internal(uint8_t *peer_mac) 

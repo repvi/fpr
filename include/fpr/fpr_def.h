@@ -53,6 +53,17 @@ typedef bool(*fpr_connection_request_cb_t)(const uint8_t *peer_mac, const char *
  */
 typedef void(*fpr_peer_discovered_cb_t)(const uint8_t *peer_mac, const char *peer_name, int8_t rssi);
 
+/**
+ * @brief Callback for host selection (client mode, manual connection).
+ * Called when a host is discovered and manual connection mode is active.
+ * Application should decide whether to connect to this host.
+ * @param peer_mac MAC address of discovered host.
+ * @param peer_name Name of discovered host.
+ * @param rssi Signal strength.
+ * @return true to connect to this host, false to skip.
+ */
+typedef bool(*fpr_host_selection_cb_t)(const uint8_t *peer_mac, const char *peer_name, int8_t rssi);
+
 typedef struct {
     char name[PEER_NAME_MAX_LENGTH];
     uint8_t mac[MAC_ADDRESS_LENGTH];
@@ -86,5 +97,6 @@ typedef struct {
 
 typedef struct {
     fpr_connection_mode_t connection_mode;      // Auto or manual connection
-    fpr_peer_discovered_cb_t discovery_cb;      // Callback when peers are discovered
+    fpr_peer_discovered_cb_t discovery_cb;      // Callback when peers are discovered (all modes)
+    fpr_host_selection_cb_t selection_cb;       // Callback to approve host connection (manual mode only, NULL for auto)
 } fpr_client_config_t;

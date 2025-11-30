@@ -91,6 +91,30 @@ menu "fpr"
             Enable debug output for the FPR component.
             Useful for troubleshooting and development.
 
+    config FPR_DEBUG_LOG_CLIENT_DATA_RECEIVE
+        bool "Enable Client Data Receive Debug Logging"
+        default n
+        depends on FPR_DEBUG
+        help
+            Enable detailed debug logging for client mode data reception.
+            Shows information about received packets in client mode.
+
+    config FPR_DEBUG_LOG_HOST_DATA_RECEIVE
+        bool "Enable Host Data Receive Debug Logging"
+        default n
+        depends on FPR_DEBUG
+        help
+            Enable detailed debug logging for host mode data reception.
+            Shows information about received packets in host mode.
+
+    config FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE
+        bool "Enable Extender Data Receive Debug Logging"
+        default n
+        depends on FPR_DEBUG
+        help
+            Enable detailed debug logging for extender mode data reception.
+            Shows information about received packets in extender mode.
+
     config FPR_TASK_PRIORITY
         int "FPR Task Priority"
         default 2

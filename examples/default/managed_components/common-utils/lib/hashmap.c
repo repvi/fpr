@@ -85,6 +85,18 @@ void hashmap_free(HashMap *map) {
     map->size = 0;
 }
 
+void hashmap_clear(HashMap *map) {
+    for (size_t i = 0; i < map->size; i++) {
+        HashMapEntry *entry = map->buckets[i];
+        while (entry) {
+            HashMapEntry *next = entry->next;
+            heap_caps_free(entry);
+            entry = next;
+        }
+        map->buckets[i] = NULL;
+    }
+}
+
 size_t hashmap_size(const HashMap *map)
 {
     return map->size;

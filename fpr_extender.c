@@ -97,6 +97,11 @@ static esp_err_t fpr_send_data_full_control(uint8_t *peer_address, void *data, i
 
 void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
+    #if (FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE == 1)
+    ESP_LOGI(TAG, "Extender received packet - len: %d, from: " MACSTR ", to: " MACSTR,
+             len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
+    #endif
+    
     // Check if network is paused
     if (fpr_net.paused) {
         fpr_net.stats.packets_dropped++;

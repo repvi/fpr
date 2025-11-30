@@ -99,6 +99,11 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
 
 void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
+    #if (FPR_DEBUG_LOG_CLIENT_DATA_RECEIVE == 1)
+    ESP_LOGI(TAG, "Client received packet - len: %d, from: " MACSTR ", to: " MACSTR,
+             len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
+    #endif
+    
     // Check if network is paused
     if (fpr_net.paused) {
         return;  // Drop all packets when paused

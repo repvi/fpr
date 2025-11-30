@@ -30,6 +30,7 @@ bool hashmap_put(HashMap *map, void *key, void *value);
 void *hashmap_get(const HashMap *map, const void *key);
 bool hashmap_remove(HashMap *map, const void *key);
 void hashmap_free(HashMap *map);
+void hashmap_clear(HashMap *map);
 size_t hashmap_size(const HashMap *map);
 
 /**

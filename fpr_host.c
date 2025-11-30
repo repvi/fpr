@@ -207,7 +207,7 @@ static void _handle_host_manual_mode(const esp_now_recv_info_t *esp_now_info, co
 
 void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
-    #if (FPR_DEBUG == 1)
+    #if (FPR_DEBUG_LOG_HOST_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Host received packet - len: %d, from: " MACSTR ", to: " MACSTR, 
              len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
     #endif

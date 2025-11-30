@@ -5,6 +5,7 @@ Complete API documentation for the Fast Peer Router (FPR) library.
 ## Table of Contents
 
 - [Network Lifecycle](#network-lifecycle)
+- [Network State Management](#network-state-management)
 - [Network Mode Management](#network-mode-management)
 - [Discovery & Maintenance](#discovery--maintenance)
 - [Data Transmission](#data-transmission)
@@ -108,6 +109,82 @@ esp_err_t fpr_network_stop();
 - Stops discovery and maintenance tasks
 - Does not release resources (use `fpr_network_deinit()` for cleanup)
 - Can be restarted with `fpr_network_start()`
+
+---
+
+## Network State Management
+
+Functions for managing network state and controlling pause/resume functionality.
+
+### `fpr_network_get_state()`
+
+Get the current network state.
+
+```c
+fpr_network_state_t fpr_network_get_state(void);
+```
+
+**Returns:**
+- Network state:
+  - `FPR_STATE_UNINITIALIZED` - Not initialized
+  - `FPR_STATE_INITIALIZED` - Initialized but not started
+  - `FPR_STATE_STARTED` - Started and running
+  - `FPR_STATE_PAUSED` - Paused (can be resumed)
+  - `FPR_STATE_STOPPED` - Stopped (can be restarted)
+
+**Example:**
+```c
+if (fpr_network_get_state() == FPR_STATE_STARTED) {
+    printf("Network is running\n");
+}
+```
+
+---
+
+### `fpr_network_pause()`
+
+Pause the FPR network without full stop.
+
+```c
+esp_err_t fpr_network_pause(void);
+```
+
+**Returns:**
+- `ESP_OK` on success
+- `ESP_ERR_INVALID_STATE` if not started
+
+**Notes:**
+- Paused network blocks all send operations
+- Incoming packets are dropped
+- Connections and peer state are maintained
+- Can be resumed with `fpr_network_resume()`
+- Useful for temporarily suspending network activity
+
+**Example:**
+```c
+// Pause during critical operation
+fpr_network_pause();
+perform_critical_operation();
+fpr_network_resume();
+```
+
+---
+
+### `fpr_network_resume()`
+
+Resume the FPR network after pause.
+
+```c
+esp_err_t fpr_network_resume(void);
+```
+
+**Returns:**
+- `ESP_OK` on success
+- `ESP_ERR_INVALID_STATE` if not paused
+
+**Notes:**
+- Resumes normal network operations
+- Send and receive operations are re-enabled
 
 ---
 
@@ -498,6 +575,90 @@ int fpr_network_get_peer_count();
 
 **Returns:**
 - Count of discovered peers
+
+---
+
+### `fpr_get_peer_by_name()`
+
+Find a peer by name.
+
+```c
+esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out);
+```
+
+**Parameters:**
+- `peer_name` - Name of the peer to find
+- `mac_out` - Buffer to store peer MAC address (6 bytes) if found
+
+**Returns:**
+- `ESP_OK` if peer found
+- `ESP_ERR_NOT_FOUND` if peer not found
+- `ESP_ERR_INVALID_ARG` if parameters are NULL
+
+**Example:**
+```c
+uint8_t peer_mac[6];
+if (fpr_get_peer_by_name("Device-123", peer_mac) == ESP_OK) {
+    fpr_network_send_to_peer(peer_mac, data, size, 1);
+}
+```
+
+---
+
+### `fpr_clear_all_peers()`
+
+Remove all peers from the network.
+
+```c
+esp_err_t fpr_clear_all_peers(void);
+```
+
+**Returns:**
+- `ESP_OK` on success
+
+**Notes:**
+- Clears the entire peer table
+- Removes all peers from ESP-NOW
+- Frees all peer resources
+
+**Example:**
+```c
+// Reset network and clear all peers
+fpr_clear_all_peers();
+```
+
+---
+
+### `fpr_is_peer_reachable()`
+
+Check if a specific peer is currently reachable.
+
+```c
+bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms);
+```
+
+**Parameters:**
+- `peer_mac` - MAC address of the peer to check
+- `timeout_ms` - Maximum time to wait for response (milliseconds)
+
+**Returns:**
+- `true` if peer responded within timeout
+- `false` if timeout or unreachable
+
+**Notes:**
+- Sends a ping message and waits for acknowledgment
+- Checks if peer was recently seen or actively responds
+- Blocking call - waits up to timeout_ms
+
+**Example:**
+```c
+uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+if (fpr_is_peer_reachable(peer_mac, 1000)) {
+    printf("Peer is alive!\n");
+} else {
+    printf("Peer is unreachable\n");
+}
+```
 
 ---
 
@@ -1126,6 +1287,22 @@ typedef enum {
 
 ---
 
+#### `fpr_network_state_t`
+
+Network state enumeration.
+
+```c
+typedef enum {
+    FPR_STATE_UNINITIALIZED = 0,  // Not initialized
+    FPR_STATE_INITIALIZED,        // Initialized but not started
+    FPR_STATE_STARTED,            // Started and running
+    FPR_STATE_PAUSED,             // Paused (can be resumed)
+    FPR_STATE_STOPPED             // Stopped (can be restarted)
+} fpr_network_state_t;
+```
+
+---
+
 ### Structures
 
 #### `fpr_peer_info_t`
@@ -1199,7 +1376,23 @@ Client mode configuration.
 typedef struct {
     fpr_connection_mode_t connection_mode;      // Auto/manual mode
     fpr_peer_discovered_cb_t discovery_cb;      // Discovery callback
+    fpr_host_selection_cb_t selection_cb;       // Host selection callback (manual mode)
 } fpr_client_config_t;
+```
+
+**Fields:**
+- `connection_mode`: Automatic or manual connection mode
+- `discovery_cb`: Called when a host is discovered (manual mode)
+- `selection_cb`: Called to select which discovered host to connect to (manual mode)
+
+**Usage:**
+```c
+// Manual connection with host selection
+fpr_client_config_t config = {
+    .connection_mode = FPR_CONNECTION_MODE_MANUAL,
+    .discovery_cb = on_host_discovered,
+    .selection_cb = select_best_host
+};
 ```
 
 ---
@@ -1256,6 +1449,45 @@ typedef void(*fpr_peer_discovered_cb_t)(const uint8_t *peer_mac,
 - `peer_mac` - Discovered peer's MAC
 - `peer_name` - Discovered peer's name
 - `rssi` - Signal strength
+
+---
+
+#### `fpr_host_selection_cb_t`
+
+Callback for host selection (client manual mode).
+
+```c
+typedef bool(*fpr_host_selection_cb_t)(const uint8_t *peer_mac, 
+                                       const char *peer_name, 
+                                       int8_t rssi);
+```
+
+**Parameters:**
+- `peer_mac` - Discovered host's MAC address
+- `peer_name` - Discovered host's name
+- `rssi` - Signal strength
+
+**Returns:**
+- `true` to connect to this host
+- `false` to skip and continue discovery
+
+**Usage:**
+```c
+bool select_best_host(const uint8_t *mac, const char *name, int8_t rssi) {
+    // Connect to first host with strong signal
+    if (rssi > -50) {
+        printf("Connecting to %s (RSSI: %d)\n", name, rssi);
+        return true;
+    }
+    return false;  // Keep searching
+}
+
+fpr_client_config_t config = {
+    .connection_mode = FPR_CONNECTION_MODE_MANUAL,
+    .discovery_cb = on_host_discovered,
+    .selection_cb = select_best_host
+};
+```
 
 ---
 

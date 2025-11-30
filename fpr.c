@@ -329,6 +329,18 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
     return (result == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
+esp_err_t fpr_network_stop_loop_task() 
+{
+    if (fpr_net.loop_task == NULL) {
+        vTaskDelete(fpr_net.loop_task);
+        fpr_net.loop_task = NULL;
+        return ESP_OK; // Already stopped
+    }
+    else {
+        return ESP_ERR_INVALID_STATE; // No loop task running
+    }
+}
+
 bool fpr_network_is_loop_task_running()
 {
     return (fpr_net.loop_task != NULL);

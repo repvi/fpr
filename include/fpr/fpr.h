@@ -82,12 +82,38 @@ esp_err_t fpr_network_start();
  */
 esp_err_t fpr_network_stop();
 
+/**
+ * @brief Set the network operating mode.
+ * @param mode Operating mode (FPR_MODE_CLIENT, FPR_MODE_HOST, FPR_MODE_EXTENDER, or FPR_MODE_BROADCAST).
+ * @note Must be called before fpr_network_start(). Changing mode while network is running requires stop/start cycle.
+ */
 void fpr_network_set_mode(fpr_mode_type_t mode);
 
+/**
+ * @brief Get the current network operating mode.
+ * @return Current mode (FPR_MODE_CLIENT, FPR_MODE_HOST, FPR_MODE_EXTENDER, or FPR_MODE_BROADCAST).
+ */
 fpr_mode_type_t fpr_network_get_mode();
 
+/**
+ * @brief Start the network discovery/maintenance loop task.
+ * @param duration How long the loop task should run (in FreeRTOS ticks). Use portMAX_DELAY for infinite.
+ * @param force_restart If true, restarts the task even if already running.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if already running and force_restart is false.
+ * @note This task handles periodic discovery broadcasts and connection maintenance.
+ */
 esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart);
 
+/**
+ * @brief Stop the network discovery/maintenance loop task.
+ * @return ESP_OK on success, error code otherwise.
+ */
+esp_err_t fpr_network_stop_loop_task();
+
+/**
+ * @brief Check if the loop task is currently running.
+ * @return true if loop task is active, false otherwise.
+ */
 bool fpr_network_is_loop_task_running();
 
 /**
@@ -117,8 +143,19 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
  */
 esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_id);
 
+/**
+ * @brief Send device information (name, capabilities) to a specific peer.
+ * @param peer_address MAC address of the peer to send device info to.
+ * @return ESP_OK on success, error code otherwise.
+ * @note Used during handshake and connection establishment.
+ */
 esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
 
+/**
+ * @brief Broadcast device information to all reachable peers.
+ * @return ESP_OK on success, error code otherwise.
+ * @note Useful for announcing presence or capabilities to the network.
+ */
 esp_err_t fpr_network_broadcast_device_info();
 
 /**
@@ -149,10 +186,25 @@ extern bool fpr_client_is_connected(void);
  */
 extern esp_err_t fpr_client_get_host_info(uint8_t *mac_out, char *name_out, size_t name_size);
 
+/**
+ * @brief Set network visibility/permission state.
+ * @param state Visibility state (FPR_VISIBILITY_PUBLIC or FPR_VISIBILITY_PRIVATE).
+ * @note FPR_VISIBILITY_PRIVATE restricts which devices can discover or connect to this device.
+ */
 void fpr_network_set_permission_state(fpr_visibility_t state);
 
+/**
+ * @brief Get current network visibility/permission state.
+ * @return Current visibility state (FPR_VISIBILITY_PUBLIC or FPR_VISIBILITY_PRIVATE).
+ */
 fpr_visibility_t fpr_network_get_permission_state(void);
 
+/**
+ * @brief Iterate through all known peers and invoke callback for each.
+ * @param callback Function to call for each peer with peer information.
+ * @param user_data Arbitrary user data pointer passed to the callback.
+ * @return Number of peers iterated.
+ */
 size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data);
 
 /**
@@ -315,6 +367,14 @@ extern esp_err_t fpr_client_disconnect(void);
  */
 extern size_t fpr_client_scan_for_hosts(TickType_t duration);
 
+/**
+ * @brief Wait for and retrieve data from a specific peer (blocking).
+ * @param peer_mac MAC address of the peer to receive data from.
+ * @param received_value Buffer to store received data.
+ * @param timeout Maximum time to wait for data (in FreeRTOS ticks).
+ * @return true if data was received within timeout, false otherwise.
+ * @note This is a blocking call. Use the callback API for non-blocking async reception.
+ */
 bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *received_value, TickType_t timeout);
 
 /**

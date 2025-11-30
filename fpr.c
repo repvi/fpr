@@ -188,16 +188,6 @@ static void _handle_default_send_complete(const uint8_t *mac_addr, esp_now_send_
     #endif
 }
 
-esp_err_t fpr_network_add_peer(uint8_t *peer_mac)
-{
-    return _add_peer_internal(peer_mac, NULL, false, 0);
-}
-
-esp_err_t fpr_network_remove_peer(uint8_t *peer_mac)
-{
-    return _remove_peer_internal(peer_mac);
-}
-
 esp_err_t fpr_network_start()
 {
     wifi_mode_t mode;
@@ -298,6 +288,16 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
 fpr_mode_type_t fpr_network_get_mode()
 {
     return fpr_net.current_mode;
+}
+
+esp_err_t fpr_network_add_peer(uint8_t *peer_mac)
+{
+    return _add_peer_internal(peer_mac, NULL, false, 0);
+}
+
+esp_err_t fpr_network_remove_peer(uint8_t *peer_mac)
+{
+    return _remove_peer_internal(peer_mac);
 }
 
 esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart) 
@@ -427,6 +427,7 @@ esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_i
 }
 
 // Create connection info with optional security keys
+// used externally
 fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk) 
 {
     fpr_connect_t info = {0}; // Zero-initialize
@@ -477,13 +478,6 @@ int fpr_network_get_peer_count(void)
 {
     return hashmap_size(&fpr_net.peers_map);
 }
-
-typedef struct {
-    uint8_t mac[MAC_ADDRESS_LENGTH];
-    char name[FPR_CONNECT_NAME_SIZE];
-    size_t name_size; // caller buffer size (may be 0)
-    bool found;
-} host_search_ctx_t;
 
 void fpr_network_set_permission_state(fpr_visibility_t state)
 {

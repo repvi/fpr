@@ -63,13 +63,6 @@ esp_err_t fpr_network_init(const char *name);
 esp_err_t fpr_network_deinit();
 
 /**
- * @brief Add a new peer to the network.
- * @param peer_mac MAC address of the new peer.
- * @return ESP_OK on success, error code otherwise.
- */
-esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
-
-/**
  * @brief Start the FPR network and register receive callback.
  * @param on_data_recv Callback for received data.
  * @return ESP_OK on success, error code otherwise.
@@ -96,6 +89,20 @@ void fpr_network_set_mode(fpr_mode_type_t mode);
 fpr_mode_type_t fpr_network_get_mode();
 
 /**
+ * @brief Add a new peer to the network.
+ * @param peer_mac MAC address of the new peer.
+ * @return ESP_OK on success, error code otherwise.
+ */
+esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
+
+/**
+ * @brief Remove a peer from the network.
+ * @param peer_mac MAC address of the peer to remove.
+ * @return ESP_OK on success, error code otherwise.
+ */
+esp_err_t fpr_network_remove_peer(uint8_t *peer_mac);
+
+/**
  * @brief Start the network discovery/maintenance loop task.
  * @param duration How long the loop task should run (in FreeRTOS ticks). Use portMAX_DELAY for infinite.
  * @param force_restart If true, restarts the task even if already running.
@@ -117,15 +124,6 @@ esp_err_t fpr_network_stop_loop_task();
 bool fpr_network_is_loop_task_running();
 
 /**
- * @brief Send data to the connected peer.
- * @param peer_address MAC address of the peer to send data to.
- * @param data Data buffer to send.
- * @param size Size of data buffer.
- * @return ESP_OK on success, error code otherwise.
- */
-esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
-
-/**
  * @brief Send data with custom options (max hops, etc).
  * @param peer_address Destination MAC or NULL for broadcast.
  * @param data Data buffer to send.
@@ -134,6 +132,15 @@ esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, 
  * @return ESP_OK on success, error code otherwise.
  */
 esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, const fpr_send_options_t *options);
+
+/**
+ * @brief Send data to the connected peer.
+ * @param peer_address MAC address of the peer to send data to.
+ * @param data Data buffer to send.
+ * @param size Size of data buffer.
+ * @return ESP_OK on success, error code otherwise.
+ */
+esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
 
 /**
  * @brief Broadcast data to all peers.
@@ -157,13 +164,6 @@ esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
  * @note Useful for announcing presence or capabilities to the network.
  */
 esp_err_t fpr_network_broadcast_device_info();
-
-/**
- * @brief Remove a peer from the network.
- * @param peer_mac MAC address of the peer to remove.
- * @return ESP_OK on success, error code otherwise.
- */
-esp_err_t fpr_network_remove_peer(uint8_t *peer_mac);
 
 /**
  * @brief Gets number of peers found

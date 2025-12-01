@@ -141,7 +141,7 @@ menu "fpr"
         default FPR_TEST_HOST
         help
             Select the role for FPR testing.
-            Choose between Host, Client, or Extender roles for testing purposes.
+            Choose between Host, Client, Extender, or Data Size Test roles for testing purposes.
         config FPR_TEST_HOST 
             bool "Host"
             help
@@ -156,6 +156,12 @@ menu "fpr"
             bool "Extender"
             help
                 Enable the FPR test extender role.
+
+        config FPR_TEST_DATA_SIZES
+            bool "Data Size Test"
+            help
+                Enable the FPR data size test mode.
+                Tests various payload sizes to validate fragmentation and reassembly.
     endchoice 
 
     config FPR_TEST_AUTO_START
@@ -165,4 +171,60 @@ menu "fpr"
         help
             Automatically start the FPR test on boot.
             Useful for automated testing scenarios.
+
+    menu "Data Size Test Configuration"
+        depends on FPR_TEST_DATA_SIZES
+        visible if FPR_TEST_DATA_SIZES
+
+        choice FPR_DATA_SIZE_TEST_MODE
+            prompt "Data Size Test Mode"
+            default FPR_DATA_SIZE_TEST_CLIENT
+            help
+                Select whether this device acts as Host or Client in the data size test.
+
+            config FPR_DATA_SIZE_TEST_HOST
+                bool "Host (Receiver/Echo)"
+                help
+                    Device will act as host, receiving data and optionally echoing it back.
+
+            config FPR_DATA_SIZE_TEST_CLIENT
+                bool "Client (Sender)"
+                help
+                    Device will act as client, sending test payloads to the host.
+        endchoice
+
+        config FPR_DATA_SIZE_TEST_AUTO_MODE
+            bool "Enable Auto Connection Mode"
+            default y
+            help
+                Enable automatic connection mode (vs manual).
+
+        config FPR_DATA_SIZE_TEST_ECHO_MODE
+            bool "Enable Echo Mode"
+            default y
+            help
+                Host echoes received data back to client for verification.
+                Client waits for and verifies echo responses.
+
+        config FPR_DATA_SIZE_TEST_INTERVAL_MS
+            int "Test Interval (ms)"
+            default 2000
+            range 500 10000
+            help
+                Interval in milliseconds between sending test payloads.
+
+        config FPR_DATA_SIZE_TEST_RX_TIMEOUT_MS
+            int "Receive Timeout (ms)"
+            default 5000
+            range 1000 30000
+            help
+                Timeout in milliseconds for waiting for echo responses.
+
+        config FPR_DATA_SIZE_TEST_VERIFY_PAYLOAD
+            bool "Enable Strict Payload Verification"
+            default y
+            help
+                Verify every byte of received payload matches expected pattern.
+                Disabling this only checks header (faster but less thorough).
+    endmenu
 endmenu

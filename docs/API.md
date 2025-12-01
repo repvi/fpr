@@ -505,7 +505,7 @@ fpr_register_receive_callback(on_data_received);
 Wait for and retrieve data from a specific peer (blocking).
 
 ```c
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *received_value, TickType_t timeout);
+bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout);
 ```
 
 **Parameters:**

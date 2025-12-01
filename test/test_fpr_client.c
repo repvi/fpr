@@ -179,7 +179,7 @@ static void client_loop_task(void *pvParameters)
         if (is_connected) {
             // Try to receive data from host
             uint8_t buffer[200];
-            if (fpr_network_get_data_from_peer(connected_host_mac, buffer, pdMS_TO_TICKS(1000))) {
+            if (fpr_network_get_data_from_peer(connected_host_mac, buffer, 200, pdMS_TO_TICKS(1000))) {
                 messages_received++;
                 ESP_LOGI(TAG, "[RECEIVE] Got data from host: %s", (char*)buffer);
             }

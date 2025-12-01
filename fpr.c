@@ -698,36 +698,39 @@ void fpr_print_route_table(void)
 
 // ========== CONNECTION CONTROL API IMPLEMENTATION ==========
 
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void* received_value, TickType_t timeout) 
+bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout)
 {
-    FPR_STORE_HASH_TYPE *data = _get_peer_from_map(peer_mac);
-    if (data) {
+    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    if (peer && data && data_size > 0) {
         fpr_package_t pkg;
         size_t offset = 0;
+        int data_remaining = data_size;
         bool expecting_more = false;
         
-        while (xQueueReceive(data->response_queue, &pkg, timeout) == pdPASS) {
+        while (xQueueReceive(peer->response_queue, &pkg, timeout) == pdPASS) {
+            int copy_size = (data_remaining < (int)sizeof(pkg.protocol)) ? data_remaining : (int)sizeof(pkg.protocol);
+            data_remaining -= copy_size;
             switch (pkg.package_type) {
                 case FPR_PACKAGE_TYPE_SINGLE:
-                    memcpy(received_value, &pkg.protocol, sizeof(pkg.protocol));
+                    memcpy(data, &pkg.protocol, sizeof(pkg.protocol));
                     return true;
                     
                 case FPR_PACKAGE_TYPE_START:
                     offset = 0;
-                    memcpy((uint8_t *)received_value + offset, &pkg.protocol, sizeof(pkg.protocol));
+                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
                     offset += sizeof(pkg.protocol);
                     expecting_more = true;
                     break;
                     
                 case FPR_PACKAGE_TYPE_CONTINUED:
                     if (!expecting_more) continue; // unexpected, skip
-                    memcpy((uint8_t *)received_value + offset, &pkg.protocol, sizeof(pkg.protocol));
+                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
                     offset += sizeof(pkg.protocol);
                     break;
                     
                 case FPR_PACKAGE_TYPE_END:
-                    memcpy((uint8_t *)received_value + offset, &pkg.protocol, sizeof(pkg.protocol));
-                    return true;
+                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
+                    return (data_remaining <= 0); // maybe only true if 0
             }
         }
     }    

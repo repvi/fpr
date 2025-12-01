@@ -413,12 +413,13 @@ extern size_t fpr_client_scan_for_hosts(TickType_t duration);
 /**
  * @brief Wait for and retrieve data from a specific peer (blocking).
  * @param peer_mac MAC address of the peer to receive data from.
- * @param received_value Buffer to store received data.
+ * @param data Buffer to store received data.
+ * @param data_size Size of the data buffer.
  * @param timeout Maximum time to wait for data (in FreeRTOS ticks).
  * @return true if data was received within timeout, false otherwise.
  * @note This is a blocking call. Use the callback API for non-blocking async reception.
  */
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *received_value, TickType_t timeout);
+bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout);
 
 /**
  * @brief Start persistent background reconnect/keepalive monitoring.

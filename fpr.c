@@ -702,35 +702,56 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
 {
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
     if (peer && data && data_size > 0) {
+        const int CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
         fpr_package_t pkg;
         size_t offset = 0;
-        int data_remaining = data_size;
         bool expecting_more = false;
         
         while (xQueueReceive(peer->response_queue, &pkg, timeout) == pdPASS) {
-            int copy_size = (data_remaining < (int)sizeof(pkg.protocol)) ? data_remaining : (int)sizeof(pkg.protocol);
-            data_remaining -= copy_size;
+            int copy_size = (data_size - offset < CHUNK_CAP) ? (data_size - offset) : CHUNK_CAP;
+    
             switch (pkg.package_type) {
                 case FPR_PACKAGE_TYPE_SINGLE:
-                    memcpy(data, &pkg.protocol, sizeof(pkg.protocol));
-                    return true;
-                    
+                    // Only valid if the whole message fits in one packet
+                    if (data_size > CHUNK_CAP) {
+                        continue; // too big for SINGLE, skip
+                    }
+                    memcpy(data, &pkg.protocol, copy_size);
+                    return (copy_size == data_size);
+    
                 case FPR_PACKAGE_TYPE_START:
+                    // Begin a multi‑packet transfer
                     offset = 0;
-                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
-                    offset += sizeof(pkg.protocol);
                     expecting_more = true;
+                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    offset += copy_size;
                     break;
-                    
+    
                 case FPR_PACKAGE_TYPE_CONTINUED:
-                    if (!expecting_more) continue; // unexpected, skip
-                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
-                    offset += sizeof(pkg.protocol);
+                    if (!expecting_more) {
+                        continue; // out of order, skip
+                    }
+                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    offset += copy_size;
                     break;
-                    
+    
                 case FPR_PACKAGE_TYPE_END:
-                    memcpy((uint8_t *)data + offset, &pkg.protocol, sizeof(pkg.protocol));
-                    return (data_remaining <= 0); // maybe only true if 0
+                    if (!expecting_more) {
+                        continue; // out of order, skip
+                    }
+                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    offset += copy_size;
+                    // Success only if we filled exactly the requested size
+                    return (offset == (size_t)data_size);
+    
+                default:
+                    // Unknown type, ignore
+                    continue;
+            }
+    
+            // If we've already filled the buffer, stop early
+            if (offset >= (size_t)data_size) {
+                return true;
             }
         }
     }    

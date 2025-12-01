@@ -89,15 +89,23 @@ static void _handle_host_auto_mode(const esp_now_recv_info_t *esp_now_info, cons
         
         if (err == ESP_OK && existing) {
             // Handle security state machine (WiFi-style)
-            if (!info->has_pwk) {
+            if (!info->has_pwk && existing->sec_state == FPR_SEC_STATE_NONE) {
                 // Step 1: Client sent initial request without PWK
-                // Send back device info with PWK
+                // Send back device info with PWK (only if not already sent)
                 fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
-            } else if (info->has_pwk && info->has_lwk) {
+            } else if (info->has_pwk && info->has_lwk && existing->sec_state == FPR_SEC_STATE_PWK_SENT) {
                 // Step 3: Client sent PWK + its own LWK
                 // Verify PWK, store client's LWK, send acknowledgment, mark connected
+                // Only process once (when state is PWK_SENT)
                 fpr_sec_host_verify_and_ack(esp_now_info->src_addr, existing, info, fpr_net.host_pwk);
             }
+            #if (FPR_DEBUG == 1)
+            else if (!info->has_pwk && existing->sec_state != FPR_SEC_STATE_NONE) {
+                ESP_LOGD(TAG, "Ignoring duplicate initial request (state=%d)", existing->sec_state);
+            } else if (info->has_pwk && info->has_lwk && existing->sec_state != FPR_SEC_STATE_PWK_SENT) {
+                ESP_LOGD(TAG, "Ignoring client response - not in correct state (state=%d)", existing->sec_state);
+            }
+            #endif
         } else {
             ESP_LOGE(TAG, "Failed to add peer: %s", esp_err_to_name(err));
         }

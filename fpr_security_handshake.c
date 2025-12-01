@@ -89,6 +89,7 @@ esp_err_t fpr_sec_client_handle_pwk(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE
     esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), -1);
     
     if (err == ESP_OK) {
+        peer->sec_state = FPR_SEC_STATE_LWK_SENT;
         ESP_LOGI(TAG, "Sent PWK + LWK to host");
     }
     

@@ -143,12 +143,28 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
             // In manual mode, host initiates handshake after approval
             if (info->has_pwk && !info->has_lwk) {
                 // Step 2: Received PWK from host
-                // Generate own LWK and send PWK+LWK back
-                fpr_sec_client_handle_pwk(esp_now_info->src_addr, existing, info);
+                // Only process if we haven't already received and processed a PWK
+                if (existing->sec_state < FPR_SEC_STATE_PWK_RECEIVED) {
+                    // Generate own LWK and send PWK+LWK back
+                    fpr_sec_client_handle_pwk(esp_now_info->src_addr, existing, info);
+                }
+                #if (FPR_DEBUG == 1)
+                else {
+                    ESP_LOGD(TAG, "Ignoring duplicate PWK - already in handshake (state=%d)", existing->sec_state);
+                }
+                #endif
             } else if (info->has_pwk && info->has_lwk) {
                 // Step 4: Received acknowledgment from host with PWK+LWK
-                // Verify and mark connected
-                fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
+                // Only verify if we've already sent our LWK and are waiting for ACK
+                if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
+                    // Verify and mark connected
+                    fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
+                }
+                #if (FPR_DEBUG == 1)
+                else {
+                    ESP_LOGD(TAG, "Ignoring ACK - not in correct state (state=%d)", existing->sec_state);
+                }
+                #endif
             }
             
             // If already connected, store application data

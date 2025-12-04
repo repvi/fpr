@@ -18,6 +18,10 @@ set(FPR_SOURCES
     "test/test_fpr_extender.c"
 )
 
+if(CONFIG_FPR_TEST_DATA_SIZES)
+    list(APPEND FPR_SOURCES "test/test_fpr_data_sizes.c")
+endif()
+
 idf_component_register(
     SRCS ${FPR_SOURCES}
     INCLUDE_DIRS

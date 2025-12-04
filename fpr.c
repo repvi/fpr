@@ -178,13 +178,13 @@ esp_err_t fpr_network_deinit(void)
 }
 
 // default
-static void _handle_default_send_complete(const uint8_t *mac_addr, esp_now_send_status_t status)
+static void _handle_default_send_complete(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     #if (FPR_DEBUG == 1)
     if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGI(TAG, "Data sent successfully to " MACSTR, MAC2STR(mac_addr));
+        ESP_LOGI(TAG, "Data sent successfully");
     } else {
-        ESP_LOGE(TAG, "Failed to send data to " MACSTR ": %d", MAC2STR(mac_addr), status);
+        ESP_LOGE(TAG, "Failed to send data: %d", status);
     }
     #endif
 }

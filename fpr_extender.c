@@ -34,12 +34,12 @@ typedef struct {
 
 static const char *TAG = "fpr_extender";
 
-static void _handle_extender_send_complete(const uint8_t *mac_addr, esp_now_send_status_t status)
+static void _handle_extender_send_complete(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGD(TAG, "Extender forwarded packet to " MACSTR, MAC2STR(mac_addr));
+        ESP_LOGD(TAG, "Extender forwarded packet");
     } else {
-        ESP_LOGW(TAG, "Extender failed to forward to " MACSTR, MAC2STR(mac_addr));
+        ESP_LOGW(TAG, "Extender failed to forward");
     }
 }
 

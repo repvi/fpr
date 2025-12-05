@@ -54,7 +54,7 @@ typedef struct {
 #define FPR_STORE_HASH_TYPE fpr_store_hash_t
 
 #define FPR_BROADCAST_ADDRESS {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
-#define FPR_QUEUE_LENGTH 10
+#define FPR_QUEUE_LENGTH 20 // for enough data for incoming packets
 
 #define FPR_PROTOCOL_DATA_INT_SIZE 45
 
@@ -75,8 +75,10 @@ typedef struct {
     uint8_t hop_count;          // Current hop number
     uint8_t max_hops;           // Maximum allowed hops (TTL)
     code_version_t version;   // Protocol version
+    
+    uint16_t payload_size;      // Actual bytes used in protocol union for this packet
 
-    uint8_t reserved[16]; // Padding for alignment
+    uint8_t reserved[14]; // Padding for alignment (reduced from 16 to account for payload_size)
 } fpr_package_t;
 
 _Static_assert(ESP_NOW_MAX_DATA_LEN > sizeof(fpr_package_t), "ESP_NOW_MAX_DATA_LEN must be greater than sizeof(fpr_package_t)");

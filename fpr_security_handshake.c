@@ -23,7 +23,7 @@ esp_err_t fpr_sec_host_send_pwk(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *pe
     
     ESP_LOGI(TAG, "Sending PWK to client: %s", peer->name);
     fpr_connect_t response = make_fpr_info_with_keys(true, false, host_pwk, NULL);
-    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), -1);
+    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
         peer->sec_state = FPR_SEC_STATE_PWK_SENT;
@@ -52,7 +52,7 @@ esp_err_t fpr_sec_host_verify_and_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TY
     
     // Send acknowledgment with PWK + LWK back to client
     fpr_connect_t response = make_fpr_info_with_keys(true, true, host_pwk, peer->security.lwk);
-    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), -1);
+    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
         peer->sec_state = FPR_SEC_STATE_LWK_SENT;
@@ -86,7 +86,7 @@ esp_err_t fpr_sec_client_handle_pwk(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE
     
     // Send device info back with PWK + client's LWK
     fpr_connect_t response = make_fpr_info_with_keys(true, true, peer->security.pwk, peer->security.lwk);
-    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), -1);
+    esp_err_t err = fpr_network_send_to_peer((uint8_t *)peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
         peer->sec_state = FPR_SEC_STATE_LWK_SENT;

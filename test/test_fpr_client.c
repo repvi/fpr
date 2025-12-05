@@ -118,7 +118,7 @@ static void send_test_message(void)
     snprintf(message, sizeof(message), "Test message #%lu from client", messages_sent + 1);
     
     ESP_LOGI(TAG, "[SEND] Sending message to %s: \"%s\"", connected_host_name, message);
-    esp_err_t err = fpr_network_send_to_peer(connected_host_mac, (uint8_t *)message, strlen(message) + 1, -1);
+    esp_err_t err = fpr_network_send_to_peer(connected_host_mac, (uint8_t *)message, strlen(message) + 1, 0);
     
     if (err == ESP_OK) {
         messages_sent++;

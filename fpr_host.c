@@ -240,8 +240,12 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
     bool is_broadcast = is_broadcast_address(esp_now_info->des_addr);
     
     #if (FPR_DEBUG == 1)
-    ESP_LOGI(TAG, "Packet is %s, package_type: %d", is_broadcast ? "BROADCAST" : "UNICAST", package->package_type);
+    ESP_LOGI(TAG, "Packet is %s, package_type: %d, id: %d", is_broadcast ? "BROADCAST" : "UNICAST", package->package_type, package->id);
     #endif
+    
+    // Connection/handshake packets use FPR_PACKET_ID_CONTROL (-1)
+    // Application data packets use other IDs (0 or positive)
+    bool is_control_packet = (package->id == FPR_PACKET_ID_CONTROL);
     
     fpr_connect_t *info = &package->protocol.connect_info;
     
@@ -249,10 +253,11 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
     if (!is_broadcast) {
         FPR_STORE_HASH_TYPE *existing = _get_peer_from_map(esp_now_info->src_addr);
 
-        // Check if this is a connection request (peer doesn't exist, not connected, or reconnecting after restart)
-        // Client reconnection detected: existing connection but client sends request without keys (client restarted)
-        bool is_reconnection = (existing && existing->is_connected && !info->has_pwk && !info->has_lwk);
-        bool is_connection_request = (!existing || !existing->is_connected || is_reconnection);
+        // Only treat as connection request if:
+        // 1. It's a control packet (id == -1), AND
+        // 2. Peer doesn't exist, or not connected, or reconnecting after restart
+        bool is_reconnection = (existing && existing->is_connected && is_control_packet && !info->has_pwk && !info->has_lwk);
+        bool is_connection_request = is_control_packet && (!existing || !existing->is_connected || is_reconnection);
         
         if (is_connection_request) {
             if (is_reconnection) {
@@ -276,11 +281,20 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
                 _handle_host_manual_mode(esp_now_info, info, existing);
             }
         }
-        else {
+        else if (existing && existing->is_connected) {
             // Peer already connected - update timestamp and store application data
             _update_peer_rssi_and_timestamp(existing, esp_now_info);
-            ESP_LOGI(TAG, "Received packet from connected peer: %s", existing->name);
+            #if (FPR_DEBUG == 1)
+            ESP_LOGI(TAG, "Received packet from connected peer: %s (id: %d)", existing->name, package->id);
+            #endif
             _store_data_from_peer_helper(esp_now_info, (const fpr_package_t *)data);
+        }
+        else {
+            // Data packet from unknown/disconnected peer - drop it
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Dropping data packet (id: %d) from unknown/disconnected peer " MACSTR, 
+                     package->id, MAC2STR(esp_now_info->src_addr));
+            #endif
         }
     }
 }

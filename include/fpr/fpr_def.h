@@ -21,6 +21,19 @@ typedef enum {
 
 typedef int fpr_package_id_t;
 
+/**
+ * @brief Reserved packet ID for connection/handshake control packets.
+ * 
+ * This ID is used internally for:
+ * - Device discovery broadcasts
+ * - Connection requests
+ * - Security handshake (PWK/LWK exchange)
+ * - Reconnection requests
+ * 
+ * Application data should use any other ID (0 or positive values recommended).
+ */
+#define FPR_PACKET_ID_CONTROL (-1)
+
 typedef enum {
     FPR_MODE_DEFUALT = 0,
     FPR_MODE_CLIENT,

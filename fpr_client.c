@@ -120,11 +120,15 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
         return; // Version handler rejected the packet
     }
     
+    // Connection/handshake packets use FPR_PACKET_ID_CONTROL (-1)
+    // Application data packets use other IDs (0 or positive)
+    bool is_control_packet = (package->id == FPR_PACKET_ID_CONTROL);
+    
     fpr_connect_t *info = &package->protocol.connect_info;
     bool is_broadcast = is_address_broadcast(esp_now_info->des_addr);
     
-    // Handle broadcast discovery messages from host
-    if (is_broadcast) {
+    // Handle broadcast discovery messages from host (always control packets)
+    if (is_broadcast && is_control_packet) {
         // Check if we already know this host
         if (_get_peer_from_map(esp_now_info->src_addr) == NULL) {
             #if (FPR_DEBUG == 1)
@@ -132,46 +136,48 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
             #endif
             _add_and_ping_host_from_client(esp_now_info, info);
         }
-    } else {
-        // Handle unicast response from host (security handshake)
+    } else if (!is_broadcast) {
+        // Handle unicast response from host (security handshake or data)
         FPR_STORE_HASH_TYPE *existing = _get_peer_from_map(esp_now_info->src_addr);
         if (existing) {
             // Update timestamp first for any unicast from known peer
             _update_peer_rssi_and_timestamp(existing, esp_now_info);
             
-            // Handle security handshake (WiFi-style) - works for both auto and manual modes
+            // Handle security handshake (WiFi-style) - only for control packets (id == -1)
             // In manual mode, host initiates handshake after approval
-            if (info->has_pwk && !info->has_lwk) {
-                // Step 2: Received PWK from host
-                // Only process if we haven't already received and processed a PWK
-                if (existing->sec_state < FPR_SEC_STATE_PWK_RECEIVED) {
-                    // Generate own LWK and send PWK+LWK back
-                    fpr_sec_client_handle_pwk(esp_now_info->src_addr, existing, info);
+            if (is_control_packet) {
+                if (info->has_pwk && !info->has_lwk) {
+                    // Step 2: Received PWK from host
+                    // Only process if we haven't already received and processed a PWK
+                    if (existing->sec_state < FPR_SEC_STATE_PWK_RECEIVED) {
+                        // Generate own LWK and send PWK+LWK back
+                        fpr_sec_client_handle_pwk(esp_now_info->src_addr, existing, info);
+                    }
+                    #if (FPR_DEBUG == 1)
+                    else {
+                        ESP_LOGD(TAG, "Ignoring duplicate PWK - already in handshake (state=%d)", existing->sec_state);
+                    }
+                    #endif
+                } else if (info->has_pwk && info->has_lwk) {
+                    // Step 4: Received acknowledgment from host with PWK+LWK
+                    // Only verify if we've already sent our LWK and are waiting for ACK
+                    if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
+                        // Verify and mark connected
+                        fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
+                    }
+                    #if (FPR_DEBUG == 1)
+                    else {
+                        ESP_LOGD(TAG, "Ignoring ACK - not in correct state (state=%d)", existing->sec_state);
+                    }
+                    #endif
                 }
-                #if (FPR_DEBUG == 1)
-                else {
-                    ESP_LOGD(TAG, "Ignoring duplicate PWK - already in handshake (state=%d)", existing->sec_state);
-                }
-                #endif
-            } else if (info->has_pwk && info->has_lwk) {
-                // Step 4: Received acknowledgment from host with PWK+LWK
-                // Only verify if we've already sent our LWK and are waiting for ACK
-                if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
-                    // Verify and mark connected
-                    fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
-                }
-                #if (FPR_DEBUG == 1)
-                else {
-                    ESP_LOGD(TAG, "Ignoring ACK - not in correct state (state=%d)", existing->sec_state);
-                }
-                #endif
             }
             
-            // If already connected, store application data
-            if (existing->is_connected) {
+            // If already connected, store application data (non-control packets)
+            if (existing->is_connected && !is_control_packet) {
                 // Store data from connected peers (unicast only)
                 #if (FPR_DEBUG == 1)
-                ESP_LOGI(TAG, "Received data from connected host: %s", existing->name);
+                ESP_LOGI(TAG, "Received data from connected host: %s (id: %d)", existing->name, package->id);
                 #endif
                 _store_data_from_peer_helper(esp_now_info, package);
             }

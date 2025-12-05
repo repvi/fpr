@@ -54,15 +54,17 @@ static void generate_test_payload(uint8_t *buffer, uint16_t size, uint16_t test_
 /**
  * Wait for complete data reception with timeout
  * Polls fpr_network_get_data_from_peer until data is available or timeout
+ * NOTE: poll_interval_ms should be long enough to receive all fragments of a multi-packet transfer
  */
 static bool wait_for_data(uint8_t *peer_mac, void *buffer, int size, TickType_t total_timeout_ms, TickType_t poll_interval_ms)
 {
     TickType_t start = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(total_timeout_ms);
-    TickType_t poll_ticks = pdMS_TO_TICKS(poll_interval_ms);
+    // Use at least 500ms per poll to allow multi-packet reception
+    TickType_t poll_ticks = pdMS_TO_TICKS(poll_interval_ms < 500 ? 500 : poll_interval_ms);
     
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
-        // Try to get data with short timeout per attempt
+        // Try to get data with sufficient timeout per attempt for fragmented packets
         bool got_data = fpr_network_get_data_from_peer(peer_mac, buffer, size, poll_ticks);
         if (got_data) {
             return true;
@@ -210,7 +212,7 @@ static void client_test_task(void *pvParameters)
         generate_test_payload(buffer, size, test_id);
         
         ESP_LOGI(TAG, "[CLIENT] Sending test #%u: %u bytes...", test_id, size);
-        esp_err_t err = fpr_network_send_to_peer(peer_mac, buffer, size, -1);
+        esp_err_t err = fpr_network_send_to_peer(peer_mac, buffer, size, test_id);
         
         if (err == ESP_OK) {
             bytes_sent += size;
@@ -363,7 +365,7 @@ static void host_test_task(void *pvParameters)
                 // Echo back if echo mode enabled
                 if (test_echo_mode) {
                     ESP_LOGI(TAG, "[HOST] Sending %u bytes back to client...", size);
-                    esp_err_t err = fpr_network_send_to_peer(peers[i].mac, rx_buffer, size, -1);
+                    esp_err_t err = fpr_network_send_to_peer(peers[i].mac, rx_buffer, size, test_id);
                     if (err == ESP_OK) {
                         bytes_sent += size;
                         ESP_LOGI(TAG, "[HOST] Echo sent successfully");

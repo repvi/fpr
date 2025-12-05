@@ -395,6 +395,7 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
         }
         
         package.id = options->package_id;
+        package.payload_size = (uint16_t)chunk_size;  // Track actual bytes in this packet
         memcpy(&package.protocol, data_ptr, chunk_size);
         
         // Initialize routing fields
@@ -419,6 +420,12 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
         data_ptr += chunk_size;
         data_remaining -= (int)chunk_size;
         is_first_packet = false;
+        
+        // Small delay between fragments to prevent overwhelming the receiver
+        // Only needed for multi-packet transfers
+        if (!single_packet && data_remaining > 0) {
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
     }
     return last_result;
 }
@@ -483,13 +490,13 @@ static fpr_connect_t make_fpr_info()
 esp_err_t fpr_network_send_device_info(uint8_t *peer_address)
 {
     fpr_connect_t info = make_fpr_info();
-    return fpr_network_send_to_peer(peer_address, (void *)&info, sizeof(info), -1);
+    return fpr_network_send_to_peer(peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }
 // extern 
 esp_err_t fpr_network_broadcast_device_info()
 {
     fpr_connect_t info = make_fpr_info();
-    return fpr_network_broadcast((void *)&info, sizeof(info), -1);
+    return fpr_network_broadcast((void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }
 
 int fpr_network_get_peer_count(void)
@@ -702,27 +709,33 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
 {
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
     if (peer && data && data_size > 0) {
-        const int CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
+        const size_t CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
         fpr_package_t pkg;
         size_t offset = 0;
         bool expecting_more = false;
         
         while (xQueueReceive(peer->response_queue, &pkg, timeout) == pdPASS) {
-            int copy_size = (data_size - offset < CHUNK_CAP) ? (data_size - offset) : CHUNK_CAP;
+            // Use payload_size if set, otherwise fall back to CHUNK_CAP for backwards compatibility
+            size_t actual_payload = (pkg.payload_size > 0 && pkg.payload_size <= CHUNK_CAP) 
+                                    ? pkg.payload_size : CHUNK_CAP;
+            
+            // Calculate how much to copy - don't exceed remaining buffer space
+            size_t remaining_space = (size_t)data_size - offset;
+            size_t copy_size = (remaining_space < actual_payload) ? remaining_space : actual_payload;
     
             switch (pkg.package_type) {
                 case FPR_PACKAGE_TYPE_SINGLE:
-                    // Only valid if the whole message fits in one packet
-                    if (data_size > CHUNK_CAP) {
-                        continue; // too big for SINGLE, skip
-                    }
+                    // Single packet - copy the actual payload size
+                    copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
                     memcpy(data, &pkg.protocol, copy_size);
-                    return (copy_size == data_size);
+                    return true;  // Success - got complete single packet
     
                 case FPR_PACKAGE_TYPE_START:
-                    // Begin a multi‑packet transfer
+                    // Begin a multi-packet transfer - reset offset
                     offset = 0;
                     expecting_more = true;
+                    remaining_space = (size_t)data_size;
+                    copy_size = (remaining_space < actual_payload) ? remaining_space : actual_payload;
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
                     offset += copy_size;
                     break;
@@ -741,8 +754,8 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     }
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
                     offset += copy_size;
-                    // Success only if we filled exactly the requested size
-                    return (offset == (size_t)data_size);
+                    // Success - got complete multi-packet transfer
+                    return true;
     
                 default:
                     // Unknown type, ignore

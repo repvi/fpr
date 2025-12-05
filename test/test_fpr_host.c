@@ -115,7 +115,7 @@ static void host_on_data_received(void *peer_addr, void *data, void *user_data)
     if (test_echo_enabled) {
         // Echo back the data
         ESP_LOGI(TAG, "[ECHO] Sending data back to client...");
-        esp_err_t err = fpr_network_send_to_peer((uint8_t*)src_mac, data, len, -1);
+        esp_err_t err = fpr_network_send_to_peer((uint8_t*)src_mac, data, len, 0);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "[ERROR] Failed to echo data: %s", esp_err_to_name(err));
         } else {

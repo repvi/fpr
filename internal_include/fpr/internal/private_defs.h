@@ -52,6 +52,8 @@ typedef struct {
     uint32_t last_seq_num;      // Last received sequence number (for replay protection)
     uint32_t queued_packets;    // Number of complete packets currently in queue
     fpr_queue_mode_t queue_mode; // Queue mode for this peer (defaults to global setting)
+    bool receiving_fragmented;   // True if currently receiving a multi-fragment message
+    uint32_t fragment_seq_num;   // Sequence number of the fragmented message being received
 } fpr_store_hash_t;
 
 #define FPR_STORE_HASH_TYPE fpr_store_hash_t

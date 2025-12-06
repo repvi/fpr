@@ -50,11 +50,21 @@ extern "C" {
 #endif
 
 /**
- * @brief Initialize the FPR network with device and peer MAC addresses.
+ * @brief Initialize the FPR network with device name (default config).
  * @param name Device name.
  * @return ESP_OK on success, error code otherwise.
+ * @note Uses default channel (current WiFi channel) and normal power mode.
  */
 esp_err_t fpr_network_init(const char *name);
+
+/**
+ * @brief Initialize the FPR network with extended configuration.
+ * @param name Device name.
+ * @param config Initialization config (channel, power mode). Use FPR_INIT_CONFIG_DEFAULT() for defaults.
+ * @return ESP_OK on success, error code otherwise.
+ * @note Channel must be set before ESP-NOW init. WiFi must already be initialized.
+ */
+esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config);
 
 /**
  * @brief Deinitialize the FPR network and release resources.
@@ -93,6 +103,26 @@ esp_err_t fpr_network_resume(void);
  * @return Network state (UNINITIALIZED, INITIALIZED, STARTED, PAUSED, STOPPED).
  */
 fpr_network_state_t fpr_network_get_state(void);
+
+/**
+ * @brief Set the power management mode.
+ * @param mode Power mode (FPR_POWER_NORMAL or FPR_POWER_LOW).
+ * @note LOW power mode increases polling/broadcast intervals to save battery.
+ *       Can be changed at runtime.
+ */
+void fpr_network_set_power_mode(fpr_power_mode_t mode);
+
+/**
+ * @brief Get the current power management mode.
+ * @return Current power mode.
+ */
+fpr_power_mode_t fpr_network_get_power_mode(void);
+
+/**
+ * @brief Get the configured WiFi channel.
+ * @return WiFi channel (1-14), or 0 if using auto/current channel.
+ */
+uint8_t fpr_network_get_channel(void);
 
 /**
  * @brief Set the network operating mode.

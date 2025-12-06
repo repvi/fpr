@@ -374,10 +374,12 @@ void _fpr_client_reconnect_task(void *arg)
 {
     (void)arg;
     TickType_t last_keep = xTaskGetTickCount();
-    const TickType_t keep_interval_ticks = pdMS_TO_TICKS(FPR_KEEPALIVE_INTERVAL_MS);
-    const TickType_t check_interval_ticks = pdMS_TO_TICKS(FPR_CLIENT_WAIT_CHECK_INTERVAL_MS);
 
     while (1) {
+        // Get power-adjusted intervals
+        const TickType_t keep_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_KEEPALIVE_INTERVAL_MS));
+        const TickType_t check_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_CLIENT_WAIT_CHECK_INTERVAL_MS));
+        
         // If connected, send periodic keepalive and check for host timeout
         uint8_t host_mac[MAC_ADDRESS_LENGTH];
         if (fpr_client_get_host_info(host_mac, NULL, 0) == ESP_OK) {
@@ -394,7 +396,8 @@ void _fpr_client_reconnect_task(void *arg)
 
                 // check last seen timestamp (in microseconds)
                 int64_t age_us = esp_timer_get_time() - host_peer->last_seen;
-                if ((uint64_t)US_TO_MS(age_us) > FPR_RECONNECT_TIMEOUT_MS) {
+                uint32_t timeout_ms = _fpr_get_power_adjusted_interval(FPR_RECONNECT_TIMEOUT_MS);
+                if ((uint64_t)US_TO_MS(age_us) > timeout_ms) {
                     ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)US_TO_MS(age_us));
                     host_peer->is_connected = false;
                     host_peer->state = FPR_PEER_STATE_DISCOVERED;

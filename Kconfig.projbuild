@@ -1,4 +1,41 @@
 menu "fpr"
+    config FPR_WIFI_CHANNEL
+        int "WiFi Channel for ESP-NOW"
+        default 0
+        range 0 14
+        help
+            Set the WiFi channel for ESP-NOW communication (1-14).
+            Set to 0 to use the current WiFi channel (auto).
+            All devices in the network should use the same channel.
+
+    choice FPR_POWER_MODE
+        prompt "Power Management Mode"
+        default FPR_POWER_MODE_NORMAL
+        help
+            Select the power management mode for FPR network.
+            
+        config FPR_POWER_MODE_NORMAL
+            bool "Normal"
+            help
+                Normal power mode with default polling intervals.
+                Best for responsive communication.
+                
+        config FPR_POWER_MODE_LOW
+            bool "Low Power"
+            help
+                Low power mode with longer polling intervals.
+                Reduces responsiveness but saves battery.
+    endchoice
+    
+    config FPR_LOW_POWER_MULTIPLIER
+        int "Low Power Interval Multiplier"
+        default 4
+        range 2 10
+        depends on FPR_POWER_MODE_LOW
+        help
+            Multiplier for polling intervals in low power mode.
+            Higher values save more power but reduce responsiveness.
+
     config FPR_ENABLE_LEGACY_PROTOCOL
         bool "Enable Legacy Protocol Support"
         default y

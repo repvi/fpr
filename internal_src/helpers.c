@@ -1,7 +1,8 @@
 #include "fpr/internal/helpers.h"
 #include "esp_check.h"
+#include "esp_log.h"
 
-static char *TAG = "fpr_helpers";
+static const char *TAG = "fpr_helpers";
 
 void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data) 
 {
@@ -11,6 +12,27 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
         _update_peer_rssi_and_timestamp(store, esp_now_info);
+        
+        // Replay protection: check sequence number
+        // Allow sequence 0 (for legacy/handshake packets)
+        // Allow same sequence (for multi-packet fragments)
+        // Block packets with OLDER sequence numbers (replay attacks)
+        if (data->sequence_num != 0 && data->sequence_num < store->last_seq_num) {
+            // Potential replay attack - drop packet with old sequence
+            fpr_net.stats.replay_attacks_blocked++;
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Replay attack blocked from " MACSTR " (seq %lu < last %lu)",
+                     MAC2STR(peer_address), (unsigned long)data->sequence_num, 
+                     (unsigned long)store->last_seq_num);
+            #endif
+            return;
+        }
+        
+        // Update last seen sequence number (only if newer)
+        if (data->sequence_num > store->last_seq_num) {
+            store->last_seq_num = data->sequence_num;
+        }
+        
         store->packets_received++;
         
         // Store in queue

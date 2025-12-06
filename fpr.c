@@ -128,12 +128,37 @@ static esp_err_t _add_broadcast_peer(const char *mode_name)
 
 esp_err_t fpr_network_init(const char *name)
 {
+    // Use Kconfig defaults
+    fpr_init_config_t config = {
+        .channel = FPR_WIFI_CHANNEL,
+        .power_mode = (fpr_power_mode_t)FPR_DEFAULT_POWER_MODE
+    };
+    return fpr_network_init_ex(name, &config);
+}
+
+esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
+{
     ESP_RETURN_ON_FALSE(name != NULL, ESP_ERR_INVALID_ARG, TAG, "Name is NULL");
+    ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
     ESP_RETURN_ON_FALSE(strlen(name) < sizeof(fpr_net.name), ESP_ERR_INVALID_ARG, TAG, "Name too long");
     ESP_RETURN_ON_ERROR(esp_read_mac(fpr_net.mac, ESP_MAC_WIFI_STA), TAG, "Failed to read MAC address");
     
     strncpy(fpr_net.name, name, sizeof(fpr_net.name) - 1);
     fpr_net.name[sizeof(fpr_net.name) - 1] = '\0';
+    
+    // Store channel and power mode config
+    fpr_net.channel = config->channel;
+    fpr_net.power_mode = config->power_mode;
+    
+    // Set WiFi channel if specified (must be done before ESP-NOW init)
+    if (config->channel >= 1 && config->channel <= 14) {
+        esp_err_t err = esp_wifi_set_channel(config->channel, WIFI_SECOND_CHAN_NONE);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set WiFi channel %d: %s", config->channel, esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "WiFi channel set to %d", config->channel);
+        }
+    }
     
     // Initialize broadcast peer info
     _setup_broadcast_peer();
@@ -152,6 +177,9 @@ esp_err_t fpr_network_init(const char *name)
 
     // Initialize security
     fpr_net.host_pwk_valid = false;
+    
+    // Initialize sequence number counter
+    fpr_net.tx_sequence_num = 0;
 
     hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals);
     ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "Failed to initialize ESP-NOW");
@@ -159,7 +187,10 @@ esp_err_t fpr_network_init(const char *name)
     fpr_net.state = FPR_STATE_INITIALIZED;
     fpr_net.paused = false;
     
-    ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ")", fpr_net.name, MAC2STR(fpr_net.mac));
+    ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ") ch=%d pwr=%s", 
+             fpr_net.name, MAC2STR(fpr_net.mac),
+             fpr_net.channel ? fpr_net.channel : 0,
+             fpr_net.power_mode == FPR_POWER_LOW ? "LOW" : "NORMAL");
     return ESP_OK;
 }
 
@@ -378,6 +409,9 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
     uint8_t *data_ptr = (uint8_t *)data;
     esp_err_t last_result = ESP_OK;
     
+    // Get sequence number for this transmission (all fragments share same seq)
+    uint32_t seq_num = ++fpr_net.tx_sequence_num;
+    
     while (data_remaining > 0) {
         fpr_package_t package = {0};
         size_t chunk_size = ((size_t)data_remaining <= PROTOCOL_SIZE) ? (size_t)data_remaining : PROTOCOL_SIZE;
@@ -396,6 +430,7 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
         
         package.id = options->package_id;
         package.payload_size = (uint16_t)chunk_size;  // Track actual bytes in this packet
+        package.sequence_num = seq_num;               // Sequence number for replay protection
         memcpy(&package.protocol, data_ptr, chunk_size);
         
         // Initialize routing fields
@@ -564,6 +599,7 @@ void fpr_get_network_stats(fpr_network_stats_t *stats)
         stats->packets_forwarded = fpr_net.stats.packets_forwarded;
         stats->packets_dropped = fpr_net.stats.packets_dropped;
         stats->send_failures = fpr_net.stats.send_failures;
+        stats->replay_attacks_blocked = fpr_net.stats.replay_attacks_blocked;
         stats->peer_count = hashmap_size(&fpr_net.peers_map);
     }
 }
@@ -853,6 +889,22 @@ esp_err_t fpr_network_resume(void)
 fpr_network_state_t fpr_network_get_state(void)
 {
     return fpr_net.state;
+}
+
+void fpr_network_set_power_mode(fpr_power_mode_t mode)
+{
+    fpr_net.power_mode = mode;
+    ESP_LOGI(TAG, "Power mode set to %s", mode == FPR_POWER_LOW ? "LOW" : "NORMAL");
+}
+
+fpr_power_mode_t fpr_network_get_power_mode(void)
+{
+    return fpr_net.power_mode;
+}
+
+uint8_t fpr_network_get_channel(void)
+{
+    return fpr_net.channel;
 }
 
 // ========== PEER MANAGEMENT ENHANCEMENTS ==========

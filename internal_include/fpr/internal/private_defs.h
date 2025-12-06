@@ -49,6 +49,7 @@ typedef struct {
     int64_t last_seen;          // Last time we heard from this peer (microseconds, esp_timer)
     int8_t rssi;                // Signal strength
     uint32_t packets_received;  // Packets received from this peer
+    uint32_t last_seq_num;      // Last received sequence number (for replay protection)
 } fpr_store_hash_t;
 
 #define FPR_STORE_HASH_TYPE fpr_store_hash_t
@@ -77,8 +78,9 @@ typedef struct {
     code_version_t version;   // Protocol version
     
     uint16_t payload_size;      // Actual bytes used in protocol union for this packet
+    uint32_t sequence_num;      // Sequence number for replay protection
 
-    uint8_t reserved[14]; // Padding for alignment (reduced from 16 to account for payload_size)
+    uint8_t reserved[10]; // Padding for alignment (reduced to account for sequence_num)
 } fpr_package_t;
 
 _Static_assert(ESP_NOW_MAX_DATA_LEN > sizeof(fpr_package_t), "ESP_NOW_MAX_DATA_LEN must be greater than sizeof(fpr_package_t)");
@@ -109,6 +111,7 @@ typedef struct {
         uint32_t packets_forwarded;
         uint32_t packets_dropped;
         uint32_t send_failures;
+        uint32_t replay_attacks_blocked;  // Replay attack counter
     } stats;
 
     uint8_t host_pwk[FPR_KEY_SIZE];  // Host's Primary Working Key (host mode only)
@@ -117,6 +120,11 @@ typedef struct {
     TaskHandle_t reconnect_task;
     fpr_network_state_t state;        // Current network state
     bool paused;                      // Paused flag
+    
+    // Channel and power management
+    uint8_t channel;                  // WiFi channel (1-14, 0 = auto)
+    fpr_power_mode_t power_mode;      // Power management mode
+    uint32_t tx_sequence_num;         // Outgoing sequence number counter
 } fpr_network_t;
 
 

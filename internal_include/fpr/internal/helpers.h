@@ -27,6 +27,15 @@ static inline void _update_peer_rssi_and_timestamp(FPR_STORE_HASH_TYPE *peer, co
     }
 }
 
+// Helper: Get interval adjusted for power mode
+static inline uint32_t _fpr_get_power_adjusted_interval(uint32_t base_interval_ms)
+{
+    if (fpr_net.power_mode == FPR_POWER_LOW) {
+        return base_interval_ms * FPR_LOW_POWER_MULTIPLIER;
+    }
+    return base_interval_ms;
+}
+
 static inline bool is_broadcast_address(const uint8_t *mac)
 {
     const uint8_t broadcast_addr[6] = FPR_BROADCAST_ADDRESS;

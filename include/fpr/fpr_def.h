@@ -11,6 +11,17 @@ typedef enum {
     FPR_VISIBILITY_PRIVATE
 } fpr_visibility_t;
 
+/**
+ * @brief Power management modes for FPR network.
+ * 
+ * LOW_POWER mode increases polling intervals to save battery.
+ * NORMAL mode uses default intervals for responsive communication.
+ */
+typedef enum {
+    FPR_POWER_NORMAL = 0,       // Normal power mode (default intervals)
+    FPR_POWER_LOW               // Low power mode (longer intervals, less responsive)
+} fpr_power_mode_t;
+
 typedef enum {
     FPR_STATE_UNINITIALIZED = 0,  // Not initialized
     FPR_STATE_INITIALIZED,        // Initialized but not started
@@ -102,6 +113,7 @@ typedef struct {
     uint32_t packets_forwarded;
     uint32_t packets_dropped;
     uint32_t send_failures;
+    uint32_t replay_attacks_blocked;  // Packets dropped due to replay protection
     size_t peer_count;
 } fpr_network_stats_t;
 
@@ -121,3 +133,22 @@ typedef struct {
     fpr_peer_discovered_cb_t discovery_cb;      // Callback when peers are discovered (all modes)
     fpr_host_selection_cb_t selection_cb;       // Callback to approve host connection (manual mode only, NULL for auto)
 } fpr_client_config_t;
+
+/**
+ * @brief Initialization configuration for FPR network.
+ * 
+ * Pass to fpr_network_init_ex() for advanced configuration.
+ * Use fpr_network_init() for default configuration.
+ */
+typedef struct {
+    uint8_t channel;            // WiFi channel (1-14, 0 = auto/current)
+    fpr_power_mode_t power_mode; // Power management mode
+} fpr_init_config_t;
+
+/**
+ * @brief Default initialization config.
+ */
+#define FPR_INIT_CONFIG_DEFAULT() { \
+    .channel = 0, \
+    .power_mode = FPR_POWER_NORMAL \
+}

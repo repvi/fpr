@@ -2,6 +2,23 @@
 
 #include "sdkconfig.h"
 
+// Channel configuration
+#ifndef CONFIG_FPR_WIFI_CHANNEL
+#define FPR_WIFI_CHANNEL 0
+#else
+#define FPR_WIFI_CHANNEL CONFIG_FPR_WIFI_CHANNEL
+#endif
+
+// Power management - uses numeric values to avoid circular dependency with fpr_def.h
+// 0 = FPR_POWER_NORMAL, 1 = FPR_POWER_LOW
+#ifdef CONFIG_FPR_POWER_MODE_LOW
+#define FPR_DEFAULT_POWER_MODE 1  // FPR_POWER_LOW
+#define FPR_LOW_POWER_MULTIPLIER CONFIG_FPR_LOW_POWER_MULTIPLIER
+#else
+#define FPR_DEFAULT_POWER_MODE 0  // FPR_POWER_NORMAL
+#define FPR_LOW_POWER_MULTIPLIER 4  // Default multiplier if using API to switch to low power
+#endif
+
 #define FPR_ENABLE_LEGACY_PROTOCOL CONFIG_FPR_ENABLE_LEGACY_PROTOCOL
 #define FPR_RECONNECT_TASK_CORE_PIN_VALUE CONFIG_FPR_RECONNECT_TASK_CORE_PIN_VALUE
 #define FPR_QUEUE_SEND_TIMEOUT_MS CONFIG_FPR_QUEUE_SEND_TIMEOUT_MS

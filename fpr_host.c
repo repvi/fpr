@@ -384,10 +384,12 @@ void _fpr_host_reconnect_task(void *arg)
 {
     (void)arg;
     TickType_t last_keep = xTaskGetTickCount();
-    const TickType_t keep_interval_ticks = pdMS_TO_TICKS(FPR_KEEPALIVE_INTERVAL_MS);
-    const TickType_t check_interval_ticks = pdMS_TO_TICKS(FPR_HOST_SCAN_POLL_INTERVAL_MS);
 
     while (1) {
+        // Get power-adjusted intervals
+        const TickType_t keep_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_KEEPALIVE_INTERVAL_MS));
+        const TickType_t check_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_HOST_SCAN_POLL_INTERVAL_MS));
+        
         // Periodically run keepalive + reconnect checks for connected clients
         if ((xTaskGetTickCount() - last_keep) >= keep_interval_ticks) {
             hashmap_foreach(&fpr_net.peers_map, _host_reconnect_and_keepalive_cb, NULL);

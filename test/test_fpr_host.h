@@ -22,6 +22,7 @@ typedef struct {
     bool auto_mode;         // true for auto connection, false for manual
     uint32_t max_peers;     // Maximum peers (0 = unlimited)
     bool echo_enabled;      // Echo received data back to sender
+    bool use_latest_only_mode;  // Use FPR_QUEUE_MODE_LATEST_ONLY (real-time mode)
 } fpr_host_test_config_t;
 
 /**
@@ -52,7 +53,7 @@ void fpr_host_test_stop(void);
  */
 void fpr_host_test_get_stats(uint32_t *peers_discovered, uint32_t *peers_connected,
                               uint32_t *messages_received, uint32_t *bytes_received);
-
+                              
 #ifdef __cplusplus
 }
 #endif

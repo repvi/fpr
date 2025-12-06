@@ -36,6 +36,29 @@ menu "fpr"
             Multiplier for polling intervals in low power mode.
             Higher values save more power but reduce responsiveness.
 
+    choice FPR_QUEUE_MODE
+        prompt "Default Queue Mode"
+        default FPR_QUEUE_MODE_NORMAL_DEFAULT
+        help
+            Select the default queue mode for incoming data packets.
+            
+        config FPR_QUEUE_MODE_NORMAL_DEFAULT
+            bool "Normal (queue all packets)"
+            help
+                Queue all incoming packets in order.
+                Consumer processes them sequentially.
+                May cause delays if processing is slow.
+                
+        config FPR_QUEUE_MODE_LATEST_ONLY_DEFAULT
+            bool "Latest Only (keep newest, discard old)"
+            help
+                Keep only the most recent complete packet.
+                Older packets are discarded when new ones arrive.
+                Useful for real-time status updates where only
+                the latest data matters (sensors, position, etc.).
+                Eliminates processing delay at the cost of data loss.
+    endchoice
+
     config FPR_ENABLE_LEGACY_PROTOCOL
         bool "Enable Legacy Protocol Support"
         default y

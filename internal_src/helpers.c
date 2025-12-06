@@ -35,9 +35,34 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
         
         store->packets_received++;
         
+        // Check if this is a complete packet (SINGLE or END of multi-packet)
+        bool is_complete_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE || 
+                                   data->package_type == FPR_PACKAGE_TYPE_END);
+        
+        // In latest-only mode, drain queue before adding new complete packet
+        // to ensure only the most recent data is available to the consumer
+        if (is_complete_packet && store->queue_mode == FPR_QUEUE_MODE_LATEST_ONLY && 
+            store->queued_packets > 0) {
+            fpr_package_t discard_pkg;
+            // Drain all existing packets from queue
+            while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
+                #if (FPR_DEBUG == 1)
+                ESP_LOGD(TAG, "Latest-only mode: discarding old packet from " MACSTR,
+                         MAC2STR(peer_address));
+                #endif
+            }
+            store->queued_packets = 0;
+            fpr_net.stats.packets_dropped++;  // Track discarded packets in stats
+        }
+        
         // Store in queue
         // data should be of type fpr_package_t
-        xQueueSend(store->response_queue, (void*)data, pdMS_TO_TICKS(FPR_QUEUE_SEND_TIMEOUT_MS));
+        if (xQueueSend(store->response_queue, (void*)data, pdMS_TO_TICKS(FPR_QUEUE_SEND_TIMEOUT_MS)) == pdPASS) {
+            // Increment queued packet count only for complete packets
+            if (is_complete_packet) {
+                store->queued_packets++;
+            }
+        }
         
         // Call application callback if registered
         if (fpr_net.data_callback) {
@@ -74,6 +99,8 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
     store->last_seen = esp_timer_get_time();
     store->rssi = 0;
     store->packets_received = 0;
+    store->queued_packets = 0;
+    store->queue_mode = fpr_net.default_queue_mode;
     
     // Setup peer_info with the actual MAC
     memcpy(store->peer_info.peer_addr, peer_mac, 6);

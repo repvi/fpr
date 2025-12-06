@@ -56,7 +56,20 @@ static void stats_task(void *pvParameters)
         ESP_LOGI(TAG, "Packets forwarded: %lu", (unsigned long)stats.packets_forwarded);
         ESP_LOGI(TAG, "Packets dropped: %lu", (unsigned long)stats.packets_dropped);
         ESP_LOGI(TAG, "Send failures: %lu", (unsigned long)stats.send_failures);
+        ESP_LOGI(TAG, "Replay attacks blocked: %lu", (unsigned long)stats.replay_attacks_blocked);
         ESP_LOGI(TAG, "Known peers: %zu", stats.peer_count);
+        
+        // Show queue depths for all known peers
+        fpr_peer_info_t peers[10];
+        size_t count = fpr_list_all_peers(peers, 10);
+        if (count > 0) {
+            ESP_LOGI(TAG, "=== Peer Queue Status ===");
+            for (size_t i = 0; i < count; i++) {
+                uint32_t q = fpr_network_get_peer_queued_packets(peers[i].mac);
+                ESP_LOGI(TAG, "  %s (" MACSTR "): %lu queued, state=%d",
+                         peers[i].name, MAC2STR(peers[i].mac), (unsigned long)q, peers[i].state);
+            }
+        }
         ESP_LOGI(TAG, "================================");
         
         // Update local counters for get_stats API

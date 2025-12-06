@@ -50,6 +50,8 @@ typedef struct {
     int8_t rssi;                // Signal strength
     uint32_t packets_received;  // Packets received from this peer
     uint32_t last_seq_num;      // Last received sequence number (for replay protection)
+    uint32_t queued_packets;    // Number of complete packets currently in queue
+    fpr_queue_mode_t queue_mode; // Queue mode for this peer (defaults to global setting)
 } fpr_store_hash_t;
 
 #define FPR_STORE_HASH_TYPE fpr_store_hash_t
@@ -125,6 +127,9 @@ typedef struct {
     uint8_t channel;                  // WiFi channel (1-14, 0 = auto)
     fpr_power_mode_t power_mode;      // Power management mode
     uint32_t tx_sequence_num;         // Outgoing sequence number counter
+    
+    // Queue management
+    fpr_queue_mode_t default_queue_mode;  // Default queue mode for new peers
 } fpr_network_t;
 
 

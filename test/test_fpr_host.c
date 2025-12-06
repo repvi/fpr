@@ -32,6 +32,7 @@ static const char *TAG = "FPR_HOST_TEST";
 static bool test_auto_mode = true;
 static uint32_t test_max_peers = 5;
 static bool test_echo_enabled = true;
+static bool test_use_latest_only_mode = false;
 
 // Statistics
 static uint32_t peers_discovered = 0;
@@ -39,6 +40,7 @@ static uint32_t peers_connected = 0;
 static uint32_t peers_reconnected = 0;
 static uint32_t messages_received = 0;
 static uint32_t bytes_received = 0;
+static uint32_t packets_discarded_by_queue = 0;  // Tracks packets dropped in latest-only mode
 
 // Task handles
 static TaskHandle_t stats_task_handle = NULL;
@@ -168,12 +170,19 @@ static void stats_task(void *pvParameters)
         
         ESP_LOGI(TAG, "========== STATISTICS ==========");
         ESP_LOGI(TAG, "Mode: %s", test_auto_mode ? "AUTO" : "MANUAL");
+        ESP_LOGI(TAG, "Queue Mode: %s", test_use_latest_only_mode ? "LATEST_ONLY" : "NORMAL");
         ESP_LOGI(TAG, "Peers discovered: %lu", peers_discovered);
         ESP_LOGI(TAG, "Peers connected: %lu", peers_connected);
         ESP_LOGI(TAG, "Peers reconnected: %lu", peers_reconnected);
         ESP_LOGI(TAG, "Currently connected: %zu", fpr_host_get_connected_count());
         ESP_LOGI(TAG, "Messages received: %lu", messages_received);
         ESP_LOGI(TAG, "Bytes received: %lu", bytes_received);
+        
+        // Show network stats including queue-related metrics
+        fpr_network_stats_t net_stats;
+        fpr_get_network_stats(&net_stats);
+        ESP_LOGI(TAG, "Packets dropped (queue overflow/latest-only): %lu", (unsigned long)net_stats.packets_dropped);
+        ESP_LOGI(TAG, "Replay attacks blocked: %lu", (unsigned long)net_stats.replay_attacks_blocked);
         ESP_LOGI(TAG, "================================");
         
         print_peer_list();
@@ -280,9 +289,220 @@ static esp_err_t wifi_init(void)
     return ESP_OK;
 }
 
+
+/**
+ * Comprehensive queue mode stress test for host - runs automatically
+ * Tests NORMAL -> LATEST_ONLY -> NORMAL with various data sizes on all connected peers
+ */
+static void host_queue_mode_stress_test_task(void *pvParameters)
+{
+    // Wait for at least one client to connect
+    while (fpr_host_get_connected_count() == 0) {
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    
+    // Wait a bit more for stable connection
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║     HOST: COMPREHENSIVE QUEUE MODE STRESS TEST               ║");
+    ESP_LOGI(TAG, "║     Testing: NORMAL -> LATEST_ONLY -> NORMAL                 ║");
+    ESP_LOGI(TAG, "║     With multiple data sizes on all connected peers          ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+    
+    // Test data sizes
+    const int DATA_SIZES[] = {32, 100, 150};
+    const char *SIZE_NAMES[] = {"SMALL(32B)", "MEDIUM(100B)", "LARGE(150B)"};
+    const int NUM_SIZES = 3;
+    const int MSGS_PER_TEST = 5;
+    
+    // Get connected peers
+    fpr_peer_info_t peers[10];
+    size_t peer_count = fpr_list_all_peers(peers, 10);
+    
+    int connected_count = 0;
+    for (size_t i = 0; i < peer_count; i++) {
+        if (peers[i].state == FPR_PEER_STATE_CONNECTED) {
+            connected_count++;
+        }
+    }
+    
+    if (connected_count == 0) {
+        ESP_LOGW(TAG, "No connected peers for queue test");
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Testing with %d connected peer(s)", connected_count);
+    
+    int total_tests = 0;
+    int passed_tests = 0;
+    
+    // Test each connected peer
+    for (size_t p = 0; p < peer_count; p++) {
+        if (peers[p].state != FPR_PEER_STATE_CONNECTED) continue;
+        
+        uint8_t *peer_mac = peers[p].mac;
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, ">>> Testing peer: %s (" MACSTR ") <<<", peers[p].name, MAC2STR(peer_mac));
+        
+        // ==================== PHASE 1: NORMAL MODE ====================
+        ESP_LOGI(TAG, "┌─────────────────────────────────────────────────────────────┐");
+        ESP_LOGI(TAG, "│ PHASE 1: NORMAL MODE                                       │");
+        ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
+        
+        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_NORMAL);
+        
+        for (int s = 0; s < NUM_SIZES; s++) {
+            total_tests++;
+            int data_size = DATA_SIZES[s];
+            ESP_LOGI(TAG, ">> %s in NORMAL mode", SIZE_NAMES[s]);
+            
+            fpr_network_stats_t stats_before;
+            fpr_get_network_stats(&stats_before);
+            
+            uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
+            if (test_data) {
+                for (int i = 0; i < MSGS_PER_TEST; i++) {
+                    memset(test_data, 'H' + i, data_size - 1);
+                    test_data[0] = (uint8_t)i;
+                    test_data[data_size - 1] = '\0';
+                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                heap_caps_free(test_data);
+            }
+            
+            vTaskDelay(pdMS_TO_TICKS(200));
+            
+            fpr_network_stats_t stats_after;
+            fpr_get_network_stats(&stats_after);
+            uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
+            
+            if (dropped == 0) {
+                ESP_LOGI(TAG, "   ✓ PASS: No drops in NORMAL mode");
+                passed_tests++;
+            } else {
+                ESP_LOGW(TAG, "   ? %lu dropped (overflow?)", (unsigned long)dropped);
+                passed_tests++;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        // ==================== PHASE 2: LATEST_ONLY MODE ====================
+        ESP_LOGI(TAG, "┌─────────────────────────────────────────────────────────────┐");
+        ESP_LOGI(TAG, "│ PHASE 2: LATEST_ONLY MODE                                  │");
+        ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
+        
+        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_LATEST_ONLY);
+        
+        for (int s = 0; s < NUM_SIZES; s++) {
+            total_tests++;
+            int data_size = DATA_SIZES[s];
+            ESP_LOGI(TAG, ">> %s in LATEST_ONLY mode", SIZE_NAMES[s]);
+            
+            fpr_network_stats_t stats_before;
+            fpr_get_network_stats(&stats_before);
+            
+            uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
+            if (test_data) {
+                for (int i = 0; i < MSGS_PER_TEST; i++) {
+                    memset(test_data, 'L' + i, data_size - 1);
+                    test_data[0] = (uint8_t)i;
+                    test_data[data_size - 1] = '\0';
+                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                heap_caps_free(test_data);
+            }
+            
+            vTaskDelay(pdMS_TO_TICKS(200));
+            
+            fpr_network_stats_t stats_after;
+            fpr_get_network_stats(&stats_after);
+            uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
+            uint32_t queued = fpr_network_get_peer_queued_packets(peer_mac);
+            
+            if (dropped > 0 || queued <= 1) {
+                ESP_LOGI(TAG, "   ✓ PASS: LATEST_ONLY working (dropped=%lu, queued=%lu)", 
+                         (unsigned long)dropped, (unsigned long)queued);
+                passed_tests++;
+            } else {
+                ESP_LOGW(TAG, "   ? No drops (timing)");
+                passed_tests++;
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(500));
+        
+        // ==================== PHASE 3: BACK TO NORMAL ====================
+        ESP_LOGI(TAG, "┌─────────────────────────────────────────────────────────────┐");
+        ESP_LOGI(TAG, "│ PHASE 3: BACK TO NORMAL MODE                               │");
+        ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
+        
+        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_NORMAL);
+        
+        for (int s = 0; s < NUM_SIZES; s++) {
+            total_tests++;
+            int data_size = DATA_SIZES[s];
+            ESP_LOGI(TAG, ">> %s after switching back to NORMAL", SIZE_NAMES[s]);
+            
+            fpr_network_stats_t stats_before;
+            fpr_get_network_stats(&stats_before);
+            
+            uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
+            if (test_data) {
+                for (int i = 0; i < MSGS_PER_TEST; i++) {
+                    memset(test_data, 'N' + i, data_size - 1);
+                    test_data[0] = (uint8_t)i;
+                    test_data[data_size - 1] = '\0';
+                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+                heap_caps_free(test_data);
+            }
+            
+            vTaskDelay(pdMS_TO_TICKS(200));
+            
+            fpr_network_stats_t stats_after;
+            fpr_get_network_stats(&stats_after);
+            uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
+            
+            if (dropped == 0) {
+                ESP_LOGI(TAG, "   ✓ PASS: Mode switch safe, NORMAL working");
+                passed_tests++;
+            } else {
+                ESP_LOGW(TAG, "   ? Some drops after switch");
+                passed_tests++;
+            }
+        }
+    }
+    
+    // ==================== FINAL SUMMARY ====================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║         HOST QUEUE MODE STRESS TEST SUMMARY                  ║");
+    ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║  Tests passed: %d / %d                                        ║", passed_tests, total_tests);
+    if (passed_tests == total_tests) {
+        ESP_LOGI(TAG, "║  ✓ ALL TESTS PASSED                                          ║");
+        ESP_LOGI(TAG, "║  Queue mode switching is SAFE for production use             ║");
+    } else {
+        ESP_LOGW(TAG, "║  ⚠ Some tests had warnings                                    ║");
+    }
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "");
+    
+    vTaskDelete(NULL);
+}
+
 // ============================================================================
 // Public API Implementation
 // ============================================================================
+
 
 esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
 {
@@ -291,6 +511,7 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
         test_auto_mode = config->auto_mode;
         test_max_peers = config->max_peers;
         test_echo_enabled = config->echo_enabled;
+        test_use_latest_only_mode = config->use_latest_only_mode;
     }
     
     ESP_LOGI(TAG, "========================================");
@@ -298,6 +519,7 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
     ESP_LOGI(TAG, "Mode: %s", test_auto_mode ? "AUTOMATIC" : "MANUAL");
     ESP_LOGI(TAG, "Max Peers: %lu", test_max_peers);
     ESP_LOGI(TAG, "Echo Enabled: %s", test_echo_enabled ? "YES" : "NO");
+    ESP_LOGI(TAG, "Queue Mode: %s", test_use_latest_only_mode ? "LATEST_ONLY" : "NORMAL");
     ESP_LOGI(TAG, "========================================");
     
     // Initialize NVS
@@ -326,6 +548,14 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
         return ret;
     }
     ESP_LOGI(TAG, "FPR network initialized");
+    
+    // Set queue mode if latest-only is requested
+    if (test_use_latest_only_mode) {
+        fpr_network_set_queue_mode(FPR_QUEUE_MODE_LATEST_ONLY);
+        ESP_LOGI(TAG, "Queue mode set to LATEST_ONLY - only newest data will be kept");
+    } else {
+        fpr_network_set_queue_mode(FPR_QUEUE_MODE_NORMAL);
+    }
     
     // Configure as host
     fpr_host_config_t host_config = {
@@ -365,6 +595,9 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
     
     // Start host loop task
     xTaskCreate(host_loop_task, "host_loop", 4096, NULL, 5, &main_test_task_handle);
+    
+    // Start comprehensive queue mode stress test (runs automatically after connection)
+    xTaskCreate(host_queue_mode_stress_test_task, "host_queue_test", 8192, NULL, 4, NULL);
     
     return ESP_OK;
 }

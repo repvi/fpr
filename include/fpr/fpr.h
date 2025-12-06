@@ -125,6 +125,38 @@ fpr_power_mode_t fpr_network_get_power_mode(void);
 uint8_t fpr_network_get_channel(void);
 
 /**
+ * @brief Set the default queue mode for new peers.
+ * @param mode Queue mode (FPR_QUEUE_MODE_NORMAL or FPR_QUEUE_MODE_LATEST_ONLY).
+ * @note LATEST_ONLY mode keeps only the most recent packet, discarding older
+ *       ones. Useful for real-time data where only current state matters.
+ *       Affects newly added peers. Use fpr_network_set_peer_queue_mode() to
+ *       change mode for existing peers.
+ */
+void fpr_network_set_queue_mode(fpr_queue_mode_t mode);
+
+/**
+ * @brief Get the default queue mode.
+ * @return Current default queue mode.
+ */
+fpr_queue_mode_t fpr_network_get_queue_mode(void);
+
+/**
+ * @brief Set queue mode for a specific peer.
+ * @param peer_mac MAC address of the peer.
+ * @param mode Queue mode to set.
+ * @return ESP_OK on success, ESP_ERR_NOT_FOUND if peer not found.
+ */
+esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mode);
+
+/**
+ * @brief Get the number of complete packets queued for a peer.
+ * @param peer_mac MAC address of the peer.
+ * @return Number of complete packets in queue, or 0 if peer not found.
+ * @note Useful for monitoring queue depth and detecting backlog.
+ */
+uint32_t fpr_network_get_peer_queued_packets(uint8_t *peer_mac);
+
+/**
  * @brief Set the network operating mode.
  * @param mode Operating mode (FPR_MODE_CLIENT, FPR_MODE_HOST, FPR_MODE_EXTENDER, or FPR_MODE_BROADCAST).
  * @note Must be called before fpr_network_start(). Changing mode while network is running requires stop/start cycle.

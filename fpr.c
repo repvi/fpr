@@ -131,7 +131,8 @@ esp_err_t fpr_network_init(const char *name)
     // Use Kconfig defaults
     fpr_init_config_t config = {
         .channel = FPR_WIFI_CHANNEL,
-        .power_mode = (fpr_power_mode_t)FPR_DEFAULT_POWER_MODE
+        .power_mode = (fpr_power_mode_t)FPR_DEFAULT_POWER_MODE,
+        .queue_mode = (fpr_queue_mode_t)FPR_DEFAULT_QUEUE_MODE
     };
     return fpr_network_init_ex(name, &config);
 }
@@ -149,6 +150,7 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     // Store channel and power mode config
     fpr_net.channel = config->channel;
     fpr_net.power_mode = config->power_mode;
+    fpr_net.default_queue_mode = config->queue_mode;
     
     // Set WiFi channel if specified (must be done before ESP-NOW init)
     if (config->channel >= 1 && config->channel <= 14) {
@@ -187,10 +189,11 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     fpr_net.state = FPR_STATE_INITIALIZED;
     fpr_net.paused = false;
     
-    ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ") ch=%d pwr=%s", 
+    ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ") ch=%d pwr=%s queue=%s", 
              fpr_net.name, MAC2STR(fpr_net.mac),
              fpr_net.channel ? fpr_net.channel : 0,
-             fpr_net.power_mode == FPR_POWER_LOW ? "LOW" : "NORMAL");
+             fpr_net.power_mode == FPR_POWER_LOW ? "LOW" : "NORMAL",
+             fpr_net.default_queue_mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
     return ESP_OK;
 }
 
@@ -764,6 +767,10 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     // Single packet - copy the actual payload size
                     copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
                     memcpy(data, &pkg.protocol, copy_size);
+                    // Decrement queued packet count (complete packet consumed)
+                    if (peer->queued_packets > 0) {
+                        peer->queued_packets--;
+                    }
                     return true;  // Success - got complete single packet
     
                 case FPR_PACKAGE_TYPE_START:
@@ -790,6 +797,10 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     }
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
                     offset += copy_size;
+                    // Decrement queued packet count (complete multi-packet consumed)
+                    if (peer->queued_packets > 0) {
+                        peer->queued_packets--;
+                    }
                     // Success - got complete multi-packet transfer
                     return true;
     
@@ -905,6 +916,47 @@ fpr_power_mode_t fpr_network_get_power_mode(void)
 uint8_t fpr_network_get_channel(void)
 {
     return fpr_net.channel;
+}
+
+// ========== QUEUE MODE API ==========
+
+void fpr_network_set_queue_mode(fpr_queue_mode_t mode)
+{
+    fpr_net.default_queue_mode = mode;
+    ESP_LOGI(TAG, "Default queue mode set to %s", 
+             mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
+}
+
+fpr_queue_mode_t fpr_network_get_queue_mode(void)
+{
+    return fpr_net.default_queue_mode;
+}
+
+esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mode)
+{
+    ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    
+    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    if (peer) {
+        peer->queue_mode = mode;
+        ESP_LOGI(TAG, "Queue mode for peer " MACSTR " set to %s",
+                 MAC2STR(peer_mac), mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
+}
+
+uint32_t fpr_network_get_peer_queued_packets(uint8_t *peer_mac)
+{
+    if (peer_mac == NULL) {
+        return 0;
+    }
+    
+    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    if (peer) {
+        return peer->queued_packets;
+    }
+    return 0;
 }
 
 // ========== PEER MANAGEMENT ENHANCEMENTS ==========

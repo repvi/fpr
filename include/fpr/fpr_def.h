@@ -22,6 +22,25 @@ typedef enum {
     FPR_POWER_LOW               // Low power mode (longer intervals, less responsive)
 } fpr_power_mode_t;
 
+/**
+ * @brief Queue modes for incoming data packets.
+ * 
+ * Controls how the receive queue handles incoming packets when the consumer
+ * cannot keep up with the producer (sender).
+ * 
+ * NORMAL: Queue all packets in order. Consumer processes them sequentially.
+ *         May cause delays if processing is slow.
+ * 
+ * LATEST_ONLY: Keep only the most recent complete packet, discard older ones.
+ *              Useful for real-time status updates where only the latest data
+ *              matters (e.g., sensor readings, position updates).
+ *              Eliminates processing delay at the cost of discarding old data.
+ */
+typedef enum {
+    FPR_QUEUE_MODE_NORMAL = 0,   // Queue all packets (default)
+    FPR_QUEUE_MODE_LATEST_ONLY   // Keep only the latest complete packet
+} fpr_queue_mode_t;
+
 typedef enum {
     FPR_STATE_UNINITIALIZED = 0,  // Not initialized
     FPR_STATE_INITIALIZED,        // Initialized but not started
@@ -143,6 +162,7 @@ typedef struct {
 typedef struct {
     uint8_t channel;            // WiFi channel (1-14, 0 = auto/current)
     fpr_power_mode_t power_mode; // Power management mode
+    fpr_queue_mode_t queue_mode; // Default queue mode for peers
 } fpr_init_config_t;
 
 /**
@@ -150,5 +170,6 @@ typedef struct {
  */
 #define FPR_INIT_CONFIG_DEFAULT() { \
     .channel = 0, \
-    .power_mode = FPR_POWER_NORMAL \
+    .power_mode = FPR_POWER_NORMAL, \
+    .queue_mode = FPR_QUEUE_MODE_NORMAL \
 }

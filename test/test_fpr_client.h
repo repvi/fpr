@@ -22,6 +22,7 @@ typedef struct {
     bool auto_mode;                 // true for auto connection, false for manual
     uint32_t scan_duration_ms;      // How long to scan for hosts (manual mode)
     uint32_t message_interval_ms;   // How often to send test messages
+    bool use_latest_only_mode;      // Use FPR_QUEUE_MODE_LATEST_ONLY (real-time mode)
 } fpr_client_test_config_t;
 
 /**

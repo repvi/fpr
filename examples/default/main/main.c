@@ -63,9 +63,9 @@ void app_main()
 #ifdef FPR_TEST_AUTO_START
     {
         fpr_host_test_config_t cfg = {
-            .auto_mode = false,
-            .max_peers = 2,
-            .echo_enabled = false
+            .auto_mode = true,
+            .max_peers = 5,
+            .echo_enabled = true
         };
         esp_err_t _err = fpr_host_test_start(&cfg);
         if (_err != ESP_OK) {
@@ -81,7 +81,7 @@ void app_main()
 #ifdef FPR_TEST_AUTO_START
     {
         fpr_client_test_config_t cfg = {
-            .auto_mode = false,
+            .auto_mode = true,
             .scan_duration_ms = 5000,
             .message_interval_ms = 1000
         };

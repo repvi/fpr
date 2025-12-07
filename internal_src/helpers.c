@@ -35,14 +35,19 @@ static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
             store->fragment_seq_num = 0;
             return;
         }
-        
+
         // Single packet in latest-only mode - drain queue before adding
-        if (is_single_packet && store->queued_packets > 0) {
+        if (is_single_packet && store->queued_packets > 0 && store->response_queue != NULL) {
             fpr_package_t discard_pkg;
-            // Drain all existing packets from queue
-            xQueueReset(store->response_queue);
+            uint32_t dropped = 0;
+            // Drain all existing packets from queue and count them
+            while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
+                dropped++;
+            }
             store->queued_packets = 0;
-            fpr_net.stats.packets_dropped++;
+            if (dropped > 0) {
+                fpr_net.stats.packets_dropped += dropped;
+            }
         }
     } else if (!is_control_packet) {
         // NORMAL mode - handle fragmented packets properly

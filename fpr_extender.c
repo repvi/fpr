@@ -154,7 +154,8 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
     if (is_for_me || is_broadcast) {
         // Process locally (store in queue if peer exists)
         if (peer && peer->response_queue) {
-            xQueueSend(peer->response_queue, data, pdMS_TO_TICKS(FPR_QUEUE_SEND_TIMEOUT_MS));
+            // Non-blocking enqueue to avoid delaying RX path
+            xQueueSend(peer->response_queue, data, 0);
         }
         ESP_LOGI(TAG, "Extender received packet from " MACSTR " (hops: %d)", 
                  MAC2STR(package->origin_mac), package->hop_count);

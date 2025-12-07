@@ -137,8 +137,16 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
             _store_data_with_mode(store, data, peer_address);
         }
         
-        // Store in queue
-        if (xQueueSend(store->response_queue, (void*)data, pdMS_TO_TICKS(FPR_QUEUE_SEND_TIMEOUT_MS)) == pdPASS) {
+        // Call application callback if registered (do this before queue send to avoid blocking delays)
+        if (fpr_net.data_callback) {
+            fpr_package_t *package = (fpr_package_t *)data;
+            // Pass the protocol payload size to the application callback
+            int data_len = (int)sizeof(package->protocol);
+            fpr_net.data_callback(peer_address, &package->protocol, &data_len);
+        }
+
+        // Store in queue (non-blocking) - do not block the receiver on queue availability
+        if (xQueueSend(store->response_queue, (void*)data, 0) == pdPASS) {
             // Increment queued packet count only for complete packets
             if (is_complete_packet) {
                 store->queued_packets++;
@@ -149,14 +157,6 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Queue full, packet dropped from " MACSTR, MAC2STR(peer_address));
             #endif
-        }
-        
-        // Call application callback if registered
-        if (fpr_net.data_callback) {
-            fpr_package_t *package = (fpr_package_t *)data;
-            // Pass the protocol payload size to the application callback
-            int data_len = (int)sizeof(package->protocol);
-            fpr_net.data_callback(peer_address, &package->protocol, &data_len);
         }
     }
 }

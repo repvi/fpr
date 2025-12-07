@@ -62,21 +62,32 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
         return;
     }
 
-    // In manual mode with selection callback, ask application if we should connect
-    if (fpr_net.client_config.connection_mode == FPR_CONNECTION_MANUAL && 
-        fpr_net.client_config.selection_cb != NULL) {
-        bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
-        if (!should_connect) {
+    // In manual mode, consult selection callback if provided. If selection_cb is NULL,
+    // treat it as an explicit "decline" and do not auto-connect.
+    if (fpr_net.client_config.connection_mode == FPR_CONNECTION_MANUAL) {
+        if (fpr_net.client_config.selection_cb != NULL) {
+            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+            if (!should_connect) {
+                #if (FPR_DEBUG == 1)
+                ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);
+                #endif
+                // Still add as discovered but don't initiate connection
+                if (!existing) {
+                    _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+                }
+                return;
+            }
+            ESP_LOGI(TAG, "Application approved connection to host: %s", info->name);
+        } else {
             #if (FPR_DEBUG == 1)
-            ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);
+            ESP_LOGI(TAG, "Manual mode and no selection callback provided - not auto-connecting to host: %s", info->name);
             #endif
-            // Still add as discovered but don't initiate connection
+            // Add as discovered but do not initiate handshake
             if (!existing) {
                 _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
             }
             return;
         }
-        ESP_LOGI(TAG, "Application approved connection to host: %s", info->name);
     }
 
     // Add as discovered FIRST (this registers the peer with ESP-NOW) - skip if already exists
@@ -153,20 +164,43 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                 if (known_host->sec_state == FPR_SEC_STATE_NONE) {
                     ESP_LOGI(TAG, "Host %s broadcast received - reinitiating connection (current state=%d, connected=%d)",
                              info->name, known_host->sec_state, known_host->is_connected);
-                    // Reset security state and reconnect
+                    // Reset security state and reconnect (state reset is always safe)
                     known_host->sec_state = FPR_SEC_STATE_NONE;
                     known_host->is_connected = false;
                     known_host->state = FPR_PEER_STATE_DISCOVERED;
                     known_host->security.pwk_valid = false;
                     known_host->security.lwk_valid = false;
                     _update_peer_rssi_and_timestamp(known_host, esp_now_info);
-                    
-                    // Send initial discovery request to restart handshake
-                    esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
-                    if (err == ESP_OK) {
-                        ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
+
+                    // Decide whether to initiate handshake automatically based on mode
+                    if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
+                        esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
+                        if (err == ESP_OK) {
+                            ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
+                        } else {
+                            ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
+                        }
                     } else {
-                        ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
+                        // Manual mode: consult selection_cb if present; if NULL, do not auto-reconnect
+                        if (fpr_net.client_config.selection_cb) {
+                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+                            if (should_connect) {
+                                esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
+                                if (err == ESP_OK) {
+                                    ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
+                                } else {
+                                    ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
+                                }
+                            } else {
+                                #if (FPR_DEBUG == 1)
+                                ESP_LOGI(TAG, "Manual mode: application declined reconnect to host: %s", info->name);
+                                #endif
+                            }
+                        } else {
+                            #if (FPR_DEBUG == 1)
+                            ESP_LOGI(TAG, "Manual mode and no selection callback provided - not auto-reconnecting to host: %s", info->name);
+                            #endif
+                        }
                     }
                 }
                 #if (FPR_DEBUG == 1)

@@ -630,7 +630,6 @@ void fpr_get_protocol_version_string(char *buf, size_t buf_size)
     }
 }
 
-
 // ========== NETWORK STATISTICS ==========
 
 void fpr_get_network_stats(fpr_network_stats_t *stats)

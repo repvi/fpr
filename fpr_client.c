@@ -52,10 +52,12 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
         fpr_net.client_config.discovery_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
     }
 
-    // Only allow connection to one host - reject if already connected
-    if (fpr_client_is_connected()) {
+    // Check if we're already connected to a DIFFERENT host
+    // Allow reconnection to the SAME host (e.g., after restart)
+    FPR_STORE_HASH_TYPE *existing = _get_peer_from_map(esp_now_info->src_addr);
+    if (!existing && fpr_client_is_connected()) {
         #if (FPR_DEBUG == 1)
-        ESP_LOGW(TAG, "Already connected to a host - ignoring %s", info->name);
+        ESP_LOGW(TAG, "Already connected to a different host - ignoring %s", info->name);
         #endif
         return;
     }
@@ -69,14 +71,19 @@ static void _add_and_ping_host_from_client(const esp_now_recv_info_t *esp_now_in
             ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);
             #endif
             // Still add as discovered but don't initiate connection
-            _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+            if (!existing) {
+                _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+            }
             return;
         }
         ESP_LOGI(TAG, "Application approved connection to host: %s", info->name);
     }
 
-    // Add as discovered FIRST (this registers the peer with ESP-NOW)
-    esp_err_t err = _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+    // Add as discovered FIRST (this registers the peer with ESP-NOW) - skip if already exists
+    esp_err_t err = ESP_OK;
+    if (!existing) {
+        err = _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+    }
     
     if (err == ESP_OK) {
         // Send initial discovery request without keys
@@ -130,11 +137,44 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
     // Handle broadcast discovery messages from host (always control packets)
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
-        if (_get_peer_from_map(esp_now_info->src_addr) == NULL) {
+        FPR_STORE_HASH_TYPE *known_host = _get_peer_from_map(esp_now_info->src_addr);
+        if (known_host == NULL) {
             #if (FPR_DEBUG == 1)
             ESP_LOGI(TAG, "Found new host: %s (" MACSTR ")", info->name, MAC2STR(esp_now_info->src_addr));
             #endif
             _add_and_ping_host_from_client(esp_now_info, info);
+        } else {
+            // Known host - check if we need to reconnect (e.g., after host restart)
+            // If host restarted, it lost our connection info and is broadcasting again
+            // We should reinitiate connection if not fully connected
+            // BUT: Don't interrupt an in-progress handshake (sec_state > NONE)
+            if (!known_host->is_connected || known_host->sec_state != FPR_SEC_STATE_ESTABLISHED) {
+                // Only reset if we're not already in the middle of a handshake
+                if (known_host->sec_state == FPR_SEC_STATE_NONE) {
+                    ESP_LOGI(TAG, "Host %s broadcast received - reinitiating connection (current state=%d, connected=%d)",
+                             info->name, known_host->sec_state, known_host->is_connected);
+                    // Reset security state and reconnect
+                    known_host->sec_state = FPR_SEC_STATE_NONE;
+                    known_host->is_connected = false;
+                    known_host->state = FPR_PEER_STATE_DISCOVERED;
+                    known_host->security.pwk_valid = false;
+                    known_host->security.lwk_valid = false;
+                    _update_peer_rssi_and_timestamp(known_host, esp_now_info);
+                    
+                    // Send initial discovery request to restart handshake
+                    esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
+                    if (err == ESP_OK) {
+                        ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
+                    } else {
+                        ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
+                    }
+                }
+                #if (FPR_DEBUG == 1)
+                else {
+                    ESP_LOGD(TAG, "Ignoring broadcast - handshake in progress (state=%d)", known_host->sec_state);
+                }
+                #endif
+            }
         }
     } else if (!is_broadcast) {
         // Handle unicast response from host (security handshake or data)
@@ -148,6 +188,20 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
             if (is_control_packet) {
                 if (info->has_pwk && !info->has_lwk) {
                     // Step 2: Received PWK from host
+                    
+                    // CRITICAL: If we receive a PWK while in ESTABLISHED or later state,
+                    // it means the host has restarted and lost our connection.
+                    // We must reset our state and restart the handshake.
+                    if (existing->sec_state >= FPR_SEC_STATE_LWK_SENT) {
+                        ESP_LOGI(TAG, "Host %s appears to have restarted (received PWK while in state %d) - resetting connection",
+                                 existing->name, existing->sec_state);
+                        existing->sec_state = FPR_SEC_STATE_NONE;
+                        existing->is_connected = false;
+                        existing->state = FPR_PEER_STATE_DISCOVERED;
+                        existing->security.pwk_valid = false;
+                        existing->security.lwk_valid = false;
+                    }
+                    
                     // Only process if we haven't already received and processed a PWK
                     if (existing->sec_state < FPR_SEC_STATE_PWK_RECEIVED) {
                         // Generate own LWK and send PWK+LWK back
@@ -155,19 +209,33 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                     }
                     #if (FPR_DEBUG == 1)
                     else {
-                        ESP_LOGD(TAG, "Ignoring duplicate PWK - already in handshake (state=%d)", existing->sec_state);
+                        ESP_LOGW(TAG, "Ignoring duplicate PWK - already in handshake (current_state=%d, expected<%d)", 
+                                 existing->sec_state, FPR_SEC_STATE_PWK_RECEIVED);
                     }
                     #endif
                 } else if (info->has_pwk && info->has_lwk) {
                     // Step 4: Received acknowledgment from host with PWK+LWK
-                    // Only verify if we've already sent our LWK and are waiting for ACK
+                    
+                    // CRITICAL: If we're already ESTABLISHED and receive an ACK,
+                    // it's likely a retransmitted packet - safe to re-verify or ignore.
+                    // If we're in NONE/DISCOVERED, this is unexpected but could mean
+                    // we missed the PWK - let's process it anyway.
+                    if (existing->sec_state == FPR_SEC_STATE_ESTABLISHED) {
+                        #if (FPR_DEBUG == 1)
+                        ESP_LOGD(TAG, "Received ACK while already established - likely retransmit, ignoring");
+                        #endif
+                        return; // Already connected, ignore duplicate ACK
+                    }
+                    
+                    // Process ACK if we're in the correct state (LWK_SENT) or earlier
                     if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
                         // Verify and mark connected
                         fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
                     }
                     #if (FPR_DEBUG == 1)
                     else {
-                        ESP_LOGD(TAG, "Ignoring ACK - not in correct state (state=%d)", existing->sec_state);
+                        ESP_LOGW(TAG, "Ignoring ACK - wrong state (current=%d, expected=%d, has_pwk=%d, has_lwk=%d)", 
+                                 existing->sec_state, FPR_SEC_STATE_LWK_SENT, info->has_pwk, info->has_lwk);
                     }
                     #endif
                 }
@@ -190,7 +258,9 @@ void _find_host_callback(void *key, void *value, void *user_data)
     (void)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     host_search_ctx_t *ctx = (host_search_ctx_t *)user_data;
-    if (peer && peer->is_connected && !ctx->found) {
+    // Find host that is either fully connected OR in the process of connecting
+    // (state >= DISCOVERED means we know about this host)
+    if (peer && peer->state >= FPR_PEER_STATE_DISCOVERED && !ctx->found) {
         memcpy(ctx->mac, peer->peer_info.peer_addr, MAC_ADDRESS_LENGTH);
         if (ctx->name_size > 0) {
             // copy up to caller-provided size (reserve space for NUL)

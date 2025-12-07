@@ -57,58 +57,76 @@ static bool _allow_peer_to_connect(const esp_now_recv_info_t *esp_now_info, cons
 
 static void _handle_host_auto_mode(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing) 
 {
+    // Check if client is requesting reconnection (client restarted and lost keys)
+    if (existing && existing->is_connected && !info->has_pwk && !info->has_lwk) {
+        ESP_LOGI(TAG, "Client %s reconnecting (restarted) - reinitiating handshake", existing->name);
+        // Client restarted - reinitiate handshake
+        existing->is_connected = false;
+        existing->state = FPR_PEER_STATE_DISCOVERED;
+        existing->sec_state = FPR_SEC_STATE_NONE;
+        existing->security.pwk_valid = false;
+        existing->security.lwk_valid = false;
+        _update_peer_rssi_and_timestamp(existing, esp_now_info);
+        // Send PWK to restart handshake
+        fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
+        return; // Done - wait for client's response
+    }
+    
+    // If already connected and not reconnecting, just update timestamp
     if (existing && existing->is_connected) {
-        // Check if client is requesting reconnection (client restarted and lost keys)
-        if (!info->has_pwk && !info->has_lwk) {
-            ESP_LOGI(TAG, "Client %s reconnecting (restarted) - reinitiating handshake", existing->name);
-            // Client restarted - reinitiate handshake
-            existing->is_connected = false;
-            existing->state = FPR_PEER_STATE_DISCOVERED;
-            existing->sec_state = FPR_SEC_STATE_NONE;
-            existing->security.pwk_valid = false;
-            existing->security.lwk_valid = false;
-            _update_peer_rssi_and_timestamp(existing, esp_now_info);
-            // Send PWK to restart handshake
-            fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
-        } else {
-            // Already connected, just update timestamp
-            _update_peer_rssi_and_timestamp(existing, esp_now_info);
-            #if (FPR_DEBUG == 1)
-            ESP_LOGW(TAG, "Peer already connected: %s", existing->name);
-            #endif
-        }
+        _update_peer_rssi_and_timestamp(existing, esp_now_info);
+        #if (FPR_DEBUG == 1)
+        ESP_LOGW(TAG, "Peer already connected: %s", existing->name);
+        #endif
+        return;
+    }
+    
+    // Add or update peer
+    esp_err_t err = ESP_OK;
+    if (existing) {
+        _update_peer_rssi_and_timestamp(existing, esp_now_info);
     } else {
-        // Add or update peer
-        esp_err_t err = ESP_OK;
-        if (existing) {
-            _update_peer_rssi_and_timestamp(existing, esp_now_info);
-        } else {
-            err = _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
-            existing = _get_peer_from_map(esp_now_info->src_addr);
-        }
-        
-        if (err == ESP_OK && existing) {
-            // Handle security state machine (WiFi-style)
-            if (!info->has_pwk && existing->sec_state == FPR_SEC_STATE_NONE) {
-                // Step 1: Client sent initial request without PWK
-                // Send back device info with PWK (only if not already sent)
-                fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
-            } else if (info->has_pwk && info->has_lwk && existing->sec_state == FPR_SEC_STATE_PWK_SENT) {
-                // Step 3: Client sent PWK + its own LWK
+        err = _add_discovered_peer(info->name, esp_now_info->src_addr, 0, false);
+        existing = _get_peer_from_map(esp_now_info->src_addr);
+    }
+    
+    if (err == ESP_OK && existing) {
+        // Handle security state machine (WiFi-style)
+        if (!info->has_pwk && existing->sec_state == FPR_SEC_STATE_NONE) {
+            // Step 1: Client sent initial request without PWK
+            // Send back device info with PWK (only if not already sent)
+            fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
+        } else if (info->has_pwk && info->has_lwk) {
+            // Step 3: Client sent PWK + its own LWK
+            
+            // CRITICAL: Handle timing/race conditions gracefully
+            // Expected state is PWK_SENT, but allow processing if:
+            // - State is PWK_SENT (normal case)
+            // - State is NONE but we just restarted (missed our own PWK send)
+            // Don't process if already ESTABLISHED (avoid duplicate processing)
+            
+            if (existing->sec_state == FPR_SEC_STATE_ESTABLISHED) {
+                #if (FPR_DEBUG == 1)
+                ESP_LOGD(TAG, "Client %s already established, ignoring duplicate response", existing->name);
+                #endif
+            } else if (existing->sec_state == FPR_SEC_STATE_PWK_SENT || existing->sec_state == FPR_SEC_STATE_NONE) {
                 // Verify PWK, store client's LWK, send acknowledgment, mark connected
-                // Only process once (when state is PWK_SENT)
                 fpr_sec_host_verify_and_ack(esp_now_info->src_addr, existing, info, fpr_net.host_pwk);
             }
             #if (FPR_DEBUG == 1)
-            else if (!info->has_pwk && existing->sec_state != FPR_SEC_STATE_NONE) {
-                ESP_LOGD(TAG, "Ignoring duplicate initial request (state=%d)", existing->sec_state);
-            } else if (info->has_pwk && info->has_lwk && existing->sec_state != FPR_SEC_STATE_PWK_SENT) {
-                ESP_LOGD(TAG, "Ignoring client response - not in correct state (state=%d)", existing->sec_state);
+            else {
+                ESP_LOGW(TAG, "Ignoring client response - unexpected state (current=%d, has_pwk=%d, has_lwk=%d)", 
+                         existing->sec_state, info->has_pwk, info->has_lwk);
             }
             #endif
-        } else {
-            ESP_LOGE(TAG, "Failed to add peer: %s", esp_err_to_name(err));
         }
+        #if (FPR_DEBUG == 1)
+        else if (!info->has_pwk && existing->sec_state != FPR_SEC_STATE_NONE) {
+            ESP_LOGD(TAG, "Ignoring duplicate initial request (state=%d)", existing->sec_state);
+        }
+        #endif
+    } else {
+        ESP_LOGE(TAG, "Failed to add peer: %s", esp_err_to_name(err));
     }
 }
 

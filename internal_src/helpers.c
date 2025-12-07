@@ -4,6 +4,91 @@
 
 static const char *TAG = "fpr_helpers";
 
+static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, uint8_t *peer_address) 
+{
+    // Determine packet type characteristics
+    bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);
+    bool is_fragment_start = (data->package_type == FPR_PACKAGE_TYPE_START);
+    bool is_fragment_middle = (data->package_type == FPR_PACKAGE_TYPE_CONTINUED);
+    bool is_fragment_end = (data->package_type == FPR_PACKAGE_TYPE_END);
+    bool is_fragmented = (is_fragment_start || is_fragment_middle || is_fragment_end);
+    bool is_complete_packet = (is_single_packet || is_fragment_end);
+    
+    // CRITICAL: Always accept control/handshake packets regardless of queue mode
+    // Control packets (id == -1) are essential for connection management
+    bool is_control_packet = (data->id == FPR_PACKET_ID_CONTROL);
+    
+    // Handle LATEST_ONLY mode - only accept single packets, reject fragmented data
+    // BUT always allow control packets through
+    if (store->queue_mode == FPR_QUEUE_MODE_LATEST_ONLY && !is_control_packet) {
+        if (is_fragmented) {
+            // In latest-only mode, fragmented packets are not supported
+            // because we can't guarantee all fragments arrive before newer data
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Latest-only mode: dropping fragmented packet from " MACSTR 
+                     " (type=%d). Use NORMAL mode for large data.",
+                     MAC2STR(peer_address), data->package_type);
+            #endif
+            fpr_net.stats.packets_dropped++;
+            // Reset any partial fragment state
+            store->receiving_fragmented = false;
+            store->fragment_seq_num = 0;
+            return;
+        }
+        
+        // Single packet in latest-only mode - drain queue before adding
+        if (is_single_packet && store->queued_packets > 0) {
+            fpr_package_t discard_pkg;
+            // Drain all existing packets from queue
+            xQueueReset(store->response_queue);
+            store->queued_packets = 0;
+            fpr_net.stats.packets_dropped++;
+        }
+    } else if (!is_control_packet) {
+        // NORMAL mode - handle fragmented packets properly
+        if (is_fragment_start) {
+            // Starting a new fragmented message
+            // If we were already receiving fragments, the old message is lost
+            if (store->receiving_fragmented) {
+                #if (FPR_DEBUG == 1)
+                ESP_LOGW(TAG, "New fragment sequence started, discarding incomplete previous message");
+                #endif
+                // Drain partial fragments from queue
+                fpr_package_t discard_pkg;
+                while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
+                    // Check if this was part of old incomplete sequence
+                    if (discard_pkg.sequence_num == store->fragment_seq_num) {
+                        fpr_net.stats.packets_dropped++;
+                    } else {
+                        // This was a complete packet, put it back (shouldn't happen often)
+                        xQueueSendToFront(store->response_queue, &discard_pkg, 0);
+                        break;
+                    }
+                }
+            }
+            store->receiving_fragmented = true;
+            store->fragment_seq_num = data->sequence_num;
+        } else if (is_fragment_middle || is_fragment_end) {
+            // Check if this fragment belongs to current sequence
+            if (!store->receiving_fragmented || data->sequence_num != store->fragment_seq_num) {
+                // Orphaned fragment - drop it
+                #if (FPR_DEBUG == 1)
+                ESP_LOGW(TAG, "Dropping orphaned fragment from " MACSTR " (expected seq %lu, got %lu)",
+                         MAC2STR(peer_address), (unsigned long)store->fragment_seq_num,
+                         (unsigned long)data->sequence_num);
+                #endif
+                fpr_net.stats.packets_dropped++;
+                return;
+            }
+            if (is_fragment_end) {
+                // Fragment sequence complete
+                store->receiving_fragmented = false;
+                store->fragment_seq_num = 0;
+            }
+        }
+    }
+}
+
 void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data) 
 {
     fpr_net.stats.packets_received++;
@@ -34,87 +119,17 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
         }
         
         store->packets_received++;
+
+        // Check if this is a control packet
+        bool is_control_packet = (data->id == FPR_PACKET_ID_CONTROL);
         
-        // Determine packet type characteristics
-        bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);
-        bool is_fragment_start = (data->package_type == FPR_PACKAGE_TYPE_START);
-        bool is_fragment_middle = (data->package_type == FPR_PACKAGE_TYPE_CONTINUED);
-        bool is_fragment_end = (data->package_type == FPR_PACKAGE_TYPE_END);
-        bool is_fragmented = (is_fragment_start || is_fragment_middle || is_fragment_end);
-        bool is_complete_packet = (is_single_packet || is_fragment_end);
+        // Determine if this is a complete packet
+        bool is_complete_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE || 
+                                   data->package_type == FPR_PACKAGE_TYPE_END);
         
-        // Handle LATEST_ONLY mode - only accept single packets, reject fragmented data
-        if (store->queue_mode == FPR_QUEUE_MODE_LATEST_ONLY) {
-            if (is_fragmented) {
-                // In latest-only mode, fragmented packets are not supported
-                // because we can't guarantee all fragments arrive before newer data
-                #if (FPR_DEBUG == 1)
-                ESP_LOGW(TAG, "Latest-only mode: dropping fragmented packet from " MACSTR 
-                         " (type=%d). Use NORMAL mode for large data.",
-                         MAC2STR(peer_address), data->package_type);
-                #endif
-                fpr_net.stats.packets_dropped++;
-                // Reset any partial fragment state
-                store->receiving_fragmented = false;
-                store->fragment_seq_num = 0;
-                return;
-            }
-            
-            // Single packet in latest-only mode - drain queue before adding
-            if (is_single_packet && store->queued_packets > 0) {
-                fpr_package_t discard_pkg;
-                // Drain all existing packets from queue
-                while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
-                    #if (FPR_DEBUG == 1)
-                    ESP_LOGD(TAG, "Latest-only mode: discarding old packet from " MACSTR,
-                             MAC2STR(peer_address));
-                    #endif
-                }
-                store->queued_packets = 0;
-                fpr_net.stats.packets_dropped++;
-            }
-        } else {
-            // NORMAL mode - handle fragmented packets properly
-            if (is_fragment_start) {
-                // Starting a new fragmented message
-                // If we were already receiving fragments, the old message is lost
-                if (store->receiving_fragmented) {
-                    #if (FPR_DEBUG == 1)
-                    ESP_LOGW(TAG, "New fragment sequence started, discarding incomplete previous message");
-                    #endif
-                    // Drain partial fragments from queue
-                    fpr_package_t discard_pkg;
-                    while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
-                        // Check if this was part of old incomplete sequence
-                        if (discard_pkg.sequence_num == store->fragment_seq_num) {
-                            fpr_net.stats.packets_dropped++;
-                        } else {
-                            // This was a complete packet, put it back (shouldn't happen often)
-                            xQueueSendToFront(store->response_queue, &discard_pkg, 0);
-                            break;
-                        }
-                    }
-                }
-                store->receiving_fragmented = true;
-                store->fragment_seq_num = data->sequence_num;
-            } else if (is_fragment_middle || is_fragment_end) {
-                // Check if this fragment belongs to current sequence
-                if (!store->receiving_fragmented || data->sequence_num != store->fragment_seq_num) {
-                    // Orphaned fragment - drop it
-                    #if (FPR_DEBUG == 1)
-                    ESP_LOGW(TAG, "Dropping orphaned fragment from " MACSTR " (expected seq %lu, got %lu)",
-                             MAC2STR(peer_address), (unsigned long)store->fragment_seq_num,
-                             (unsigned long)data->sequence_num);
-                    #endif
-                    fpr_net.stats.packets_dropped++;
-                    return;
-                }
-                if (is_fragment_end) {
-                    // Fragment sequence complete
-                    store->receiving_fragmented = false;
-                    store->fragment_seq_num = 0;
-                }
-            }
+        // Handle queue mode logic (but skip for control packets - they always go through)
+        if (!is_control_packet) {
+            _store_data_with_mode(store, data, peer_address);
         }
         
         // Store in queue
@@ -123,6 +138,12 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
             if (is_complete_packet) {
                 store->queued_packets++;
             }
+        } else {
+            // Queue full - increment dropped counter
+            fpr_net.stats.packets_dropped++;
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Queue full, packet dropped from " MACSTR, MAC2STR(peer_address));
+            #endif
         }
         
         // Call application callback if registered

@@ -103,7 +103,9 @@ static void client_on_data_received(void *peer_addr, void *data, void *user_data
  */
 static void send_test_message(void)
 {
-    if (!is_connected) {
+    // Check connection status immediately before sending
+    bool currently_connected = fpr_client_is_connected();
+    if (!currently_connected) {
         ESP_LOGW(TAG, "[SEND] Not connected to any host, skipping message send");
         return;
     }
@@ -215,12 +217,13 @@ static void message_task(void *pvParameters)
 static void stats_task(void *pvParameters)
 {
     TickType_t last_wake = xTaskGetTickCount();
+    TickType_t last_stats_print = xTaskGetTickCount();
     bool was_connected = false;
     
     while (1) {
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10000)); // Every 10 seconds
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(1000)); // Every 1 second - check connection frequently
         
-        // Update connection status
+        // Update connection status frequently for fast reconnection
         bool currently_connected = fpr_client_is_connected();
         
         // Detect connection state changes
@@ -236,6 +239,13 @@ static void stats_task(void *pvParameters)
         
         is_connected = currently_connected;
         was_connected = currently_connected;
+        
+        // Print statistics only every 10 seconds
+        TickType_t now = xTaskGetTickCount();
+        if ((now - last_stats_print) < pdMS_TO_TICKS(10000)) {
+            continue; // Skip printing, but keep updating connection status
+        }
+        last_stats_print = now;
         
         ESP_LOGI(TAG, "========== STATISTICS ==========");
         ESP_LOGI(TAG, "Mode: %s", test_auto_mode ? "AUTO" : "MANUAL");
@@ -682,7 +692,22 @@ void fpr_client_test_stop(void)
         manual_conn_task_handle = NULL;
     }
     
-    ESP_LOGI(TAG, "FPR Client Test stopped");
+    // Properly deinitialize FPR network to clean up all state
+    fpr_network_deinit();
+    
+    // Reset all static variables for clean reinitialization
+    is_connected = false;
+    hosts_found = 0;
+    messages_sent = 0;
+    messages_received = 0;
+    successful_connections = 0;
+    successful_reconnections = 0;
+    reconnection_attempts = 0;
+    connection_drops = 0;
+    memset(connected_host_mac, 0, sizeof(connected_host_mac));
+    memset(connected_host_name, 0, sizeof(connected_host_name));
+    
+    ESP_LOGI(TAG, "FPR Client Test stopped and reset");
 }
 
 void fpr_client_test_get_stats(bool *connected, uint32_t *hosts, 

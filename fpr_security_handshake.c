@@ -60,6 +60,19 @@ esp_err_t fpr_sec_host_verify_and_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TY
         peer->is_connected = true;
         peer->state = FPR_PEER_STATE_CONNECTED;
         peer->sec_state = FPR_SEC_STATE_ESTABLISHED;
+        
+        // Reset sequence tracking for new session (handles peer restarts)
+        peer->last_seq_num = 0;
+        peer->receiving_fragmented = false;
+        peer->fragment_seq_num = 0;
+        
+        // Drain any stale queued packets from previous session
+        if (peer->response_queue != NULL) {
+            fpr_package_t tmp;
+            while (xQueueReceive(peer->response_queue, &tmp, 0) == pdPASS) { /* drop stale packets */ }
+            peer->queued_packets = 0;
+        }
+        
         ESP_LOGI(TAG, "Host: Peer connected with mutual keys: %s", peer->name);
     }
     
@@ -119,6 +132,19 @@ esp_err_t fpr_sec_client_verify_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE
     peer->is_connected = true;
     peer->state = FPR_PEER_STATE_CONNECTED;
     peer->sec_state = FPR_SEC_STATE_ESTABLISHED;
+    
+    // Reset sequence tracking for new session (handles host restarts)
+    peer->last_seq_num = 0;
+    peer->receiving_fragmented = false;
+    peer->fragment_seq_num = 0;
+    
+    // Drain any stale queued packets from previous session
+    if (peer->response_queue != NULL) {
+        fpr_package_t tmp;
+        while (xQueueReceive(peer->response_queue, &tmp, 0) == pdPASS) { /* drop stale packets */ }
+        peer->queued_packets = 0;
+    }
+    
     ESP_LOGI(TAG, "Client: Connection established with %s (mutual keys)", peer->name);
     
     return ESP_OK;

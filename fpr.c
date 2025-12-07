@@ -142,11 +142,11 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     ESP_RETURN_ON_FALSE(name != NULL, ESP_ERR_INVALID_ARG, TAG, "Name is NULL");
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
     ESP_RETURN_ON_FALSE(strlen(name) < sizeof(fpr_net.name), ESP_ERR_INVALID_ARG, TAG, "Name too long");
+    ESP_RETURN_ON_FALSE(fpr_net.state == FPR_STATE_UNINITIALIZED, ESP_ERR_INVALID_STATE, TAG, "Network already initialized");
     ESP_RETURN_ON_ERROR(esp_read_mac(fpr_net.mac, ESP_MAC_WIFI_STA), TAG, "Failed to read MAC address");
     
     strncpy(fpr_net.name, name, sizeof(fpr_net.name) - 1);
     fpr_net.name[sizeof(fpr_net.name) - 1] = '\0';
-    
     // Store channel and power mode config
     fpr_net.channel = config->channel;
     fpr_net.power_mode = config->power_mode;
@@ -200,15 +200,30 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
 // update the function
 esp_err_t fpr_network_deinit(void)
 {
+    // Stop reconnect task if running
     if (fpr_net.reconnect_task != NULL) {
         vTaskDelete(fpr_net.reconnect_task);
         fpr_net.reconnect_task = NULL;
     }
+    
+    // Stop loop task if running
+    if (fpr_net.loop_task != NULL) {
+        vTaskDelete(fpr_net.loop_task);
+        fpr_net.loop_task = NULL;
+    }
+    
+    // Clean up peers and hashmap BEFORE memset
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
-    fpr_net.state = FPR_STATE_UNINITIALIZED;
+    
+    // Deinitialize ESP-NOW
+    esp_err_t esp_now_result = esp_now_deinit();
+    
+    // Now safe to zero out the entire structure
     memset(&fpr_net, 0, sizeof(fpr_net));
-    return esp_now_deinit();
+    fpr_net.state = FPR_STATE_UNINITIALIZED;
+    
+    return esp_now_result;
 }
 
 // default
@@ -452,6 +467,13 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
             fpr_net.stats.packets_sent++;
         } else {
             fpr_net.stats.send_failures++;
+            // Log specific error for debugging
+            if (last_result == ESP_ERR_ESPNOW_NO_MEM) {
+                ESP_LOGW(TAG, "ESP-NOW buffer full (NO_MEM), try reducing send rate or increasing receive processing");
+            }
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "esp_now_send failed: %s (0x%x)", esp_err_to_name(last_result), last_result);
+            #endif
             return last_result; // Fail early on send error
         }
 
@@ -480,6 +502,23 @@ static esp_err_t fpr_network_send_helper(uint8_t *peer_address, void *data, int 
 
 esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id)
 {
+    // Validate peer exists and is connected (unless it's a control packet for handshake)
+    if (package_id != FPR_PACKET_ID_CONTROL) {
+        FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_address);
+        if (peer == NULL) {
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Attempting to send to unknown peer " MACSTR, MAC2STR(peer_address));
+            #endif
+            return ESP_ERR_NOT_FOUND;
+        }
+        if (!peer->is_connected) {
+            #if (FPR_DEBUG == 1)
+            ESP_LOGW(TAG, "Attempting to send to disconnected peer %s (" MACSTR ")", peer->name, MAC2STR(peer_address));
+            #endif
+            return ESP_ERR_INVALID_STATE;
+        }
+    }
+    
     return fpr_network_send_helper(peer_address, data, size, package_id);
 }
 

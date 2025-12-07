@@ -168,13 +168,23 @@ static void stats_task(void *pvParameters)
     while (1) {
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10000)); // Every 10 seconds
         
+        // In AUTO mode, counters aren't updated by callback, so count from peer list
+        size_t current_connected = fpr_host_get_connected_count();
+        size_t total_peers = (size_t)fpr_network_get_peer_count();
+        
+        // Update counters for auto mode (manual mode uses callback)
+        if (test_auto_mode) {
+            peers_discovered = (uint32_t)total_peers;
+            peers_connected = (uint32_t)current_connected;
+        }
+        
         ESP_LOGI(TAG, "========== STATISTICS ==========");
         ESP_LOGI(TAG, "Mode: %s", test_auto_mode ? "AUTO" : "MANUAL");
         ESP_LOGI(TAG, "Queue Mode: %s", test_use_latest_only_mode ? "LATEST_ONLY" : "NORMAL");
         ESP_LOGI(TAG, "Peers discovered: %lu", peers_discovered);
         ESP_LOGI(TAG, "Peers connected: %lu", peers_connected);
         ESP_LOGI(TAG, "Peers reconnected: %lu", peers_reconnected);
-        ESP_LOGI(TAG, "Currently connected: %zu", fpr_host_get_connected_count());
+        ESP_LOGI(TAG, "Currently connected: %zu", current_connected);
         ESP_LOGI(TAG, "Messages received: %lu", messages_received);
         ESP_LOGI(TAG, "Bytes received: %lu", bytes_received);
         
@@ -244,7 +254,7 @@ static void host_loop_task(void *pvParameters)
                     snprintf(message, sizeof(message), "Host message #%lu to %s", ++msg_count, peers[i].name);
                     
                     esp_err_t ret = fpr_network_send_to_peer(peers[i].mac, (uint8_t*)message, 
-                                                             strlen(message) + 1, -1);
+                                                             strlen(message) + 1, 0);
                     if (ret == ESP_OK) {
                         ESP_LOGI(TAG, "[SEND] Sent to %s: %s", peers[i].name, message);
                     } else {
@@ -614,7 +624,17 @@ void fpr_host_test_stop(void)
         main_test_task_handle = NULL;
     }
     
-    ESP_LOGI(TAG, "FPR Host Test stopped");
+    // Properly deinitialize FPR network to clean up all state
+    fpr_network_deinit();
+    
+    // Reset all static variables for clean reinitialization
+    peers_discovered = 0;
+    peers_connected = 0;
+    peers_reconnected = 0;
+    messages_received = 0;
+    bytes_received = 0;
+    
+    ESP_LOGI(TAG, "FPR Host Test stopped and reset");
 }
 
 void fpr_host_test_get_stats(uint32_t *peers_disc, uint32_t *peers_conn,

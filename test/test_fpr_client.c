@@ -48,7 +48,6 @@ static uint32_t successful_connections = 0;
 static uint32_t reconnection_attempts = 0;
 static uint32_t successful_reconnections = 0;
 static uint32_t connection_drops = 0;
-static uint32_t packets_discarded_by_queue = 0;  // Tracks packets dropped in latest-only mode
 
 // Task handles
 static TaskHandle_t stats_task_handle = NULL;

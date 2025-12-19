@@ -34,15 +34,6 @@ typedef struct {
 
 static const char *TAG = "fpr_extender";
 
-static void _handle_extender_send_complete(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
-{
-    if (status == ESP_NOW_SEND_SUCCESS) {
-        ESP_LOGD(TAG, "Extender forwarded packet");
-    } else {
-        ESP_LOGW(TAG, "Extender failed to forward");
-    }
-}
-
 static bool _should_forward_packet(fpr_package_t *package, const uint8_t *src_mac)
 {
     // Don't forward if we're the origin

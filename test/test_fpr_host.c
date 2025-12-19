@@ -40,7 +40,6 @@ static uint32_t peers_connected = 0;
 static uint32_t peers_reconnected = 0;
 static uint32_t messages_received = 0;
 static uint32_t bytes_received = 0;
-static uint32_t packets_discarded_by_queue = 0;  // Tracks packets dropped in latest-only mode
 
 // Task handles
 static TaskHandle_t stats_task_handle = NULL;

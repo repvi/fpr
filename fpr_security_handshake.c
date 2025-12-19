@@ -69,7 +69,6 @@ esp_err_t fpr_sec_host_verify_and_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TY
         // Drain any stale queued packets from previous session
         if (peer->response_queue != NULL) {
             xQueueReset(peer->response_queue);
-            fpr_package_t tmp;
             peer->queued_packets = 0;
         }
         

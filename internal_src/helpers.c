@@ -12,7 +12,6 @@ static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
     bool is_fragment_middle = (data->package_type == FPR_PACKAGE_TYPE_CONTINUED);
     bool is_fragment_end = (data->package_type == FPR_PACKAGE_TYPE_END);
     bool is_fragmented = (is_fragment_start || is_fragment_middle || is_fragment_end);
-    bool is_complete_packet = (is_single_packet || is_fragment_end);
     
     // CRITICAL: Always accept control/handshake packets regardless of queue mode
     // Control packets (id == -1) are essential for connection management

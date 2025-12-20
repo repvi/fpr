@@ -1,36 +1,37 @@
 /**
- * @file fpr.c
- * @brief FPR (Fast Peer Router) network protocol over ESP-NOW
+ * @file fpr.h
+ * @brief FPR (Fast Peer Router) Network Protocol API
  *
- * Implements a small peer discovery, connection and optional forwarding
- * (extender/mesh) protocol that uses ESP-NOW for lightweight low-latency
- * device-to-device communication on ESP32 family devices.
+ * FPR is a lightweight, secure mesh networking library for ESP32 devices
+ * that enables WiFi-like connectivity without requiring traditional WiFi
+ * infrastructure. Built on top of ESP-NOW.
  *
  * Features:
  * - Broadcast-based discovery and unicast connection handshake
- * - Optional client/host modes with auto/manual connection flows
- * - Simple mesh extender support (hop-count based forwarding)
- * - Small fixed-size packet format to fit ESP-NOW payload limits
+ * - Host/Client modes with auto/manual connection flows
+ * - WiFi WPA2-style 4-way security handshake
+ * - Packet fragmentation for large payloads
+ * - Network statistics and diagnostics
+ * - Protocol versioning for forward/backward compatibility
+ * 
+ * Modes:
+ * - HOST: Central coordinator accepting client connections (Stable)
+ * - CLIENT: Connect to hosts and communicate (Stable)
+ * - EXTENDER: Mesh relay for multi-hop routing (Under Development)
+ * - BROADCAST: Send to all devices in range
  *
- * Usage notes:
- * - Call `fpr_network_init()` once, then `fpr_network_start()` to enable the
- *   protocol. Use `fpr_network_set_mode()` to switch between CLIENT/HOST/EXTENDER.
- * - Application data is delivered via a registered callback (`fpr_register_receive_callback`).
- * - The implementation expects callers to manage threading and to call
- *   this API from the main application/tasks (not from ISRs unless safe).
- *
- * Limitations and warnings:
- * - ESP-NOW payload size is limited; large payloads must be fragmented by the
- *   application if needed (not implemented here).
- * - This module uses heap allocations for peer state and queues; ensure
- *   sufficient heap and consider placing structures in DRAM/IRAM using
- *   `heap_caps` flags when required.
- * - The license and usage restrictions for the surrounding project are
- *   governed by the repository owner; see project documentation for details.
+ * Usage:
+ * 1. Initialize WiFi (required for ESP-NOW)
+ * 2. Call fpr_network_init() with device name
+ * 3. Set mode with fpr_network_set_mode()
+ * 4. Register callback with fpr_register_receive_callback()
+ * 5. Start with fpr_network_start()
+ * 6. Use fpr_network_send_to_peer() or fpr_network_broadcast() to send data
  *
  * @author Alejandro Ramirez
- * @date 2025-08-29
- * @since 2025-08-29
+ * @version 1.0.0
+ * @date December 2025
+ * @since August 2025
  */
 
 #pragma once

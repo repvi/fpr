@@ -1,3 +1,14 @@
+/**
+ * @file helpers.c
+ * @brief FPR Internal Helper Functions
+ * 
+ * Internal utility functions for peer management, data storage,
+ * and packet handling. These functions are not part of the public API.
+ * 
+ * @version 1.0.0
+ * @date December 2024
+ */
+
 #include "fpr/internal/helpers.h"
 #include "esp_check.h"
 #include "esp_log.h"

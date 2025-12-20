@@ -1,3 +1,14 @@
+/**
+ * @file fpr_host.c
+ * @brief FPR Host Mode Implementation
+ * 
+ * Implements host mode functionality including client discovery,
+ * connection management, and the host side of the security handshake.
+ * 
+ * @version 1.0.0 (Stable)
+ * @date December 2025S
+ */
+
 #include "fpr/fpr_host.h"
 #include "fpr/fpr_security.h"
 #include "fpr/fpr_security_handshake.h"

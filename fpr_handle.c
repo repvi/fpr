@@ -1,9 +1,12 @@
 /**
- * @file fpr_handler.c
- * @brief Version-aware packet handler dispatcher
+ * @file fpr_handle.c
+ * @brief Version-Aware Packet Handler Dispatcher
  * 
- * Routes packets to appropriate handlers based on protocol version.
- * Supports legacy (older) and new (future) protocol versions.
+ * Routes incoming packets to appropriate handlers based on protocol version.
+ * Supports legacy (v0), current (v1.x), and future protocol versions.
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 
 #include "fpr/fpr_handle.h"

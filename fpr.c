@@ -1,36 +1,33 @@
 /**
  * @file fpr.c
- * @brief FPR (Fast Peer Router) network protocol over ESP-NOW
+ * @brief FPR (Fast Peer Router) Core Implementation
  *
- * Implements a small peer discovery, connection and optional forwarding
- * (extender/mesh) protocol that uses ESP-NOW for lightweight low-latency
- * device-to-device communication on ESP32 family devices.
+ * This is the main implementation file for the FPR protocol, providing
+ * peer discovery, connection management, and data routing functionality
+ * over ESP-NOW for ESP32 family devices.
  *
- * Features:
- * - Broadcast-based discovery and unicast connection handshake
- * - Optional client/host modes with auto/manual connection flows
- * - Simple mesh extender support (hop-count based forwarding)
- * - Small fixed-size packet format to fit ESP-NOW payload limits
+ * Core responsibilities:
+ * - Network initialization and deinitialization
+ * - ESP-NOW callback registration and packet routing
+ * - Peer management (add, remove, lookup)
+ * - Send/receive operations with fragmentation support
+ * - Network statistics tracking
+ * - Power management modes
  *
- * Usage notes:
- * - Call `fpr_network_init()` once, then `fpr_network_start()` to enable the
- *   protocol. Use `fpr_network_set_mode()` to switch between CLIENT/HOST/EXTENDER.
- * - Application data is delivered via a registered callback (`fpr_register_receive_callback`).
- * - The implementation expects callers to manage threading and to call
- *   this API from the main application/tasks (not from ISRs unless safe).
+ * Thread Safety:
+ * - Most operations are thread-safe via FreeRTOS primitives
+ * - Callbacks may be invoked from ESP-NOW context (ISR-like)
+ * - Application callbacks should be non-blocking
  *
- * Limitations and warnings:
- * - ESP-NOW payload size is limited; large payloads must be fragmented by the
- *   application if needed (not implemented here).
- * - This module uses heap allocations for peer state and queues; ensure
- *   sufficient heap and consider placing structures in DRAM/IRAM using
- *   `heap_caps` flags when required.
- * - The license and usage restrictions for the surrounding project are
- *   governed by the repository owner; see project documentation for details.
+ * Memory Management:
+ * - Uses heap allocation for peer structures
+ * - Queue-based message buffering
+ * - Configurable queue depths via Kconfig
  *
  * @author Alejandro Ramirez
- * @date 2025-08-29
- * @since 2025-08-29
+ * @version 1.0.0
+ * @date December 2025
+ * @since August 2025
  */
 
 #include "fpr/internal/helpers.h"

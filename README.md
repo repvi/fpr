@@ -3,8 +3,11 @@
 [![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/repvi/fpr)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ESP32-orange.svg)](https://www.espressif.com/en/products/socs/esp32)
+[![LTS](https://img.shields.io/badge/LTS-Long%20Term%20Support-brightgreen.svg)](#version-history)
 
 **FPR (Fast Peer Router)** is a lightweight, secure mesh networking library for ESP32 devices that enables WiFi-like connectivity without requiring a traditional WiFi infrastructure. Built on top of ESP-NOW, FPR creates self-organizing networks that can span multiple hops, making it ideal for IoT deployments, sensor networks, and distributed applications.
+
+> **✅ Version 1.0.0 LTS Released!** This is the first official stable release with Long-Term Support. Host and Client modes are fully functional and production-ready. Extender (mesh) mode is under active development.
 
 > **🚀 Enterprise Vision**: FPR is designed with enterprise-grade reliability and scalability in mind. Our roadmap includes advanced features for mission-critical applications, commercial-grade security, and enterprise support services to meet the demands of large-scale industrial deployments.
 
@@ -25,7 +28,7 @@
 ### **Flexible Network Topologies**
 - **Host Mode**: Act as a central coordinator accepting client connections
 - **Client Mode**: Connect to available hosts and communicate through them
-- **Extender Mode**: Relay messages between distant devices (mesh functionality)
+- **Extender Mode**: Relay messages between distant devices (mesh functionality) *(🚧 Under Development)*
 - **Broadcast Mode**: Send data to all devices in the network simultaneously
 
 ### **Production Ready**
@@ -243,8 +246,8 @@ FPR includes a comprehensive test suite designed for real-world validation:
 
 | Version | Release Date | Key Features |
 |---------|--------------|--------------|
-| **1.0.0** | 2025-08 | Initial versioned release with fragmentation |
-| **0.x** | 2025 | Pre-versioning development (legacy support)       |
+| **1.0.0** | December 2024 | Official stable release with LTS support, host/client modes fully functional, security handshake, fragmentation support |
+| **0.x** | 2024-2025 | Pre-versioning development (legacy support) |
 
 **Development Roadmap:**
 - **0.1.0**: Base protocol implementation
@@ -256,7 +259,8 @@ FPR includes a comprehensive test suite designed for real-world validation:
 - **0.7.0**: Memory management optimization
 
 **Enterprise Roadmap:**
-- **1.0.0**: Official stable release with LTS support
+- **1.0.0**: ✅ Official stable release with LTS support (Current)
+- **1.1.0**: Extender/mesh mode completion and optimization
 - **1.5.0**: Enterprise security suite (certificate-based auth)
 - **2.0.0**: Large-scale network management (1000+ devices)
 - **2.5.0**: Cloud integration and remote management

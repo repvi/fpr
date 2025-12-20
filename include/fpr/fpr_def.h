@@ -1,5 +1,17 @@
 #pragma once
 
+/**
+ * @file fpr_def.h
+ * @brief FPR Type Definitions and Data Structures
+ * 
+ * This header defines all public types, enums, and structures used
+ * throughout the FPR library. These definitions provide the foundation
+ * for network configuration, peer management, and data transmission.
+ * 
+ * @version 1.0.0
+ * @date December 2025
+ */
+
 #include <stdint.h>
 #include "standard/time.h"
 

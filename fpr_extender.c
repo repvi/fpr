@@ -1,3 +1,16 @@
+/**
+ * @file fpr_extender.c
+ * @brief FPR Extender/Mesh Mode Implementation
+ * 
+ * @warning UNDER DEVELOPMENT - This module is not yet production-ready.
+ *          Extender mode will be completed in version 1.1.0.
+ * 
+ * Implements mesh networking functionality for multi-hop packet forwarding.
+ * 
+ * @version 1.0.0 (Under Development)
+ * @date December 2025
+ */
+
 #include "fpr/fpr_extender.h"
 #include "esp_log.h"
 #include "esp_check.h"

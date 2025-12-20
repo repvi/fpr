@@ -1,6 +1,12 @@
 /**
  * @file fpr_security.c
  * @brief FPR Security and Key Exchange Implementation
+ * 
+ * Implements cryptographic key generation and verification for the
+ * FPR security handshake protocol.
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 
 #include "fpr/fpr_security.h"

@@ -1,5 +1,26 @@
 #pragma once
 
+/**
+ * @file fpr_config.h
+ * @brief FPR Configuration Definitions
+ * 
+ * This header maps Kconfig options to FPR configuration macros.
+ * All timing, debug, and behavior settings are controlled via
+ * ESP-IDF's menuconfig system (idf.py menuconfig).
+ * 
+ * Configuration Categories:
+ * - Channel: WiFi channel selection
+ * - Power: Low power mode settings
+ * - Queue: Receive queue behavior
+ * - Timing: Connection timeouts and intervals
+ * - Debug: Logging verbosity
+ * - Task: FreeRTOS task parameters
+ * 
+ * @version 1.0.0
+ * @date December 2025
+ * @see Kconfig.projbuild for available options
+ */
+
 #include "sdkconfig.h"
 
 // Channel configuration

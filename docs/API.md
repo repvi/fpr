@@ -1,6 +1,17 @@
 # FPR API Reference
 
+> **Version 1.0.0 LTS** | December 2025
+
 Complete API documentation for the Fast Peer Router (FPR) library.
+
+## Stability Status
+
+| Mode | Status | Notes |
+|------|--------|-------|
+| **Host Mode** | ✅ Stable | Production-ready |
+| **Client Mode** | ✅ Stable | Production-ready |
+| **Broadcast Mode** | ✅ Stable | Production-ready |
+| **Extender Mode** | 🚧 Development | Coming in v1.1.0 |
 
 ## Table of Contents
 
@@ -15,6 +26,7 @@ Complete API documentation for the Fast Peer Router (FPR) library.
 - [Network Information](#network-information)
 - [Statistics & Diagnostics](#statistics--diagnostics)
 - [Version Management](#version-management)
+- [LTS Functions](#lts-functions)
 - [Data Types](#data-types)
 - [Constants](#constants)
 
@@ -1555,6 +1567,115 @@ void app_main() {
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
+```
+
+---
+
+## LTS Functions
+
+Long-Term Support functions for version management and compatibility checking.
+
+### `fpr_lts_version_to_string()`
+
+Convert a version number to a human-readable string.
+
+```c
+void fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_size);
+```
+
+**Parameters:**
+- `version` - Version to convert
+- `buf` - Buffer to store string (recommend at least 16 bytes)
+- `buf_size` - Size of buffer
+
+**Example:**
+```c
+char ver_str[16];
+fpr_lts_version_to_string(FPR_PROTOCOL_VERSION, ver_str, sizeof(ver_str));
+printf("Protocol version: %s\n", ver_str);  // Output: "1.0.0"
+```
+
+---
+
+### `fpr_lts_log_compatibility()`
+
+Log compatibility information for debugging.
+
+```c
+void fpr_lts_log_compatibility(code_version_t remote_version);
+```
+
+**Parameters:**
+- `remote_version` - Version received from remote device
+
+**Notes:**
+- Logs to ESP_LOG with appropriate level (INFO, WARN, or ERROR)
+- Useful for debugging version mismatch issues
+
+---
+
+### `fpr_lts_get_min_supported_version()`
+
+Get the minimum supported protocol version.
+
+```c
+code_version_t fpr_lts_get_min_supported_version(void);
+```
+
+**Returns:**
+- Minimum version that this device can communicate with
+
+---
+
+### `fpr_lts_supports_feature()`
+
+Check if a specific feature is supported by a given version.
+
+```c
+bool fpr_lts_supports_feature(code_version_t version, const char *feature);
+```
+
+**Parameters:**
+- `version` - Protocol version to check
+- `feature` - Feature name string
+
+**Supported Features:**
+- `"fragmentation"` - Packet fragmentation support
+- `"mesh_routing"` - Mesh/extender routing support
+- `"versioning"` - Protocol version field support
+
+**Returns:**
+- `true` if the version supports the feature, `false` otherwise
+
+**Example:**
+```c
+code_version_t peer_version = ...; // from peer handshake
+if (fpr_lts_supports_feature(peer_version, "fragmentation")) {
+    // Can send fragmented packets to this peer
+}
+```
+
+---
+
+### Version Checking Macros
+
+Static inline functions for quick version checks:
+
+```c
+// Check if remote version is compatible
+bool fpr_version_is_compatible(code_version_t remote_version);
+
+// Check if remote version matches current (no special handling needed)
+bool fpr_version_is_current(code_version_t remote_version);
+
+// Check if remote version needs legacy handler
+bool fpr_version_needs_legacy_handler(code_version_t remote_version);
+
+// Check if remote version is newer than ours
+bool fpr_version_needs_newer_handler(code_version_t remote_version);
+
+// Get current protocol version
+code_version_t fpr_get_current_version(void);
 ```
 
 ---

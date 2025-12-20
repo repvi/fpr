@@ -2,23 +2,29 @@
 
 /**
  * @file fpr_security.h
- * @brief FPR Security and Key Exchange System (WiFi-style 4-way handshake)
+ * @brief FPR Security and Key Exchange System
  * 
- * Implements a secure key exchange protocol similar to WiFi WPA2:
- * 1. Host generates PWK (Primary Working Key) - like WiFi's PMK
- * 2. Host broadcasts device info with PWK
- * 3. Client receives PWK, stores it
- * 4. Client generates its own LWK (Local Working Key) - client's random contribution
- * 5. Client sends device info with PWK + LWK to host
- * 6. Host receives, verifies PWK, stores client's LWK
- * 7. Host sends acknowledgment with PWK + LWK back to client
- * 8. Both mark as connected - both parties contributed randomness
+ * Implements a WiFi WPA2-style 4-way handshake for secure peer authentication:
  * 
- * This provides:
- * - Mutual authentication (both verify PWK)
- * - Both parties contribute to session key (LWK from client)
- * - Protection against replay attacks
+ * Handshake Flow:
+ * 1. Host generates PWK (Primary Working Key) - similar to WiFi's PMK
+ * 2. Host sends device info with PWK to discovered client
+ * 3. Client receives PWK, stores it, generates own LWK (Local Working Key)
+ * 4. Client sends device info with PWK + LWK back to host
+ * 5. Host receives, verifies PWK, stores client's LWK
+ * 6. Host sends acknowledgment with PWK + LWK back to client
+ * 7. Client verifies acknowledgment
+ * 8. Both mark connection as ESTABLISHED
+ * 
+ * Security Properties:
+ * - Mutual authentication (both parties verify PWK)
+ * - Both parties contribute randomness to session (LWK from client)
+ * - Protection against replay attacks via sequence numbers
  * - Reconnection capability using stored keys
+ * - Keys are stored per-peer for session isolation
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 
 #include <stdint.h>

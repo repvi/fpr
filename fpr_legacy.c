@@ -1,9 +1,12 @@
 /**
  * @file fpr_legacy.c
- * @brief Legacy protocol handlers for FPR backward compatibility
+ * @brief Legacy Protocol Handlers for Backward Compatibility
  * 
- * Contains handlers to process packets from older firmware versions.
- * Each major version change should add a new handler function here.
+ * Processes packets from older firmware versions (v0 pre-versioning era).
+ * Provides graceful degradation for networks with mixed firmware versions.
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 #include "fpr/fpr_legacy.h"
 #include "fpr/fpr_lts.h"

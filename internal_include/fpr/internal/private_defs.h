@@ -1,5 +1,19 @@
 #pragma once
 
+/**
+ * @file private_defs.h
+ * @brief FPR Private Type Definitions and Structures
+ * 
+ * Internal data structures used by the FPR implementation.
+ * These definitions are not part of the public API and may
+ * change between versions.
+ * 
+ * @warning Internal API - subject to change without notice.
+ * 
+ * @version 1.0.0
+ * @date December 2024
+ */
+
 #include "fpr/fpr_handle.h"
 #include "fpr/fpr_def.h"
 #include "fpr/fpr_config.h"

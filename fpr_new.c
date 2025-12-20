@@ -1,9 +1,12 @@
 /**
  * @file fpr_new.c
- * @brief Future protocol version handlers for forward compatibility
+ * @brief Future Protocol Version Handlers for Forward Compatibility
  * 
- * Implements handlers for newer protocol versions that may be received
- * from devices running future firmware versions.
+ * Handles packets from newer protocol versions. Provides forward compatibility
+ * by attempting to extract compatible fields from future packet formats.
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 
 #include "fpr/fpr_new.h"

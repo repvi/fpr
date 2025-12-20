@@ -2,7 +2,11 @@
  * @file fpr_security_handshake.c
  * @brief FPR Security Handshake Helper Functions
  * 
- * Common helper functions for host and client security handshakes
+ * Implements the WiFi WPA2-style 4-way handshake for both host and
+ * client modes. Handles key exchange and connection establishment.
+ * 
+ * @version 1.0.0
+ * @date December 2025
  */
 
 #include "fpr/fpr_security_handshake.h"

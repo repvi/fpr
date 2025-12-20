@@ -1,5 +1,19 @@
 #pragma once
 
+/**
+ * @file helpers.h
+ * @brief FPR Internal Helper Functions and Macros
+ * 
+ * Internal utility functions for peer management, data handling,
+ * and common operations. These are implementation details not part
+ * of the public API.
+ * 
+ * @warning Internal API - subject to change without notice.
+ * 
+ * @version 1.0.0
+ * @date December 2024
+ */
+
 #include "fpr/internal/private_defs.h"
 #include "esp_timer.h"
 

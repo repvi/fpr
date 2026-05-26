@@ -1,5 +1,5 @@
-menu "fpr"
-    config FPR_WIFI_CHANNEL
+menu "sprout"
+    config SPROUT_WIFI_CHANNEL
         int "WiFi Channel for ESP-NOW"
         default 0
         range 0 14
@@ -8,48 +8,48 @@ menu "fpr"
             Set to 0 to use the current WiFi channel (auto).
             All devices in the network should use the same channel.
 
-    choice FPR_POWER_MODE
+    choice SPROUT_POWER_MODE
         prompt "Power Management Mode"
-        default FPR_POWER_MODE_NORMAL
+        default SPROUT_POWER_MODE_NORMAL
         help
-            Select the power management mode for FPR network.
-            
-        config FPR_POWER_MODE_NORMAL
+            Select the power management mode for Sprout network.
+
+        config SPROUT_POWER_MODE_NORMAL
             bool "Normal"
             help
                 Normal power mode with default polling intervals.
                 Best for responsive communication.
-                
-        config FPR_POWER_MODE_LOW
+
+        config SPROUT_POWER_MODE_LOW
             bool "Low Power"
             help
                 Low power mode with longer polling intervals.
                 Reduces responsiveness but saves battery.
     endchoice
-    
-    config FPR_LOW_POWER_MULTIPLIER
+
+    config SPROUT_LOW_POWER_MULTIPLIER
         int "Low Power Interval Multiplier"
         default 4
         range 2 10
-        depends on FPR_POWER_MODE_LOW
+        depends on SPROUT_POWER_MODE_LOW
         help
             Multiplier for polling intervals in low power mode.
             Higher values save more power but reduce responsiveness.
 
-    choice FPR_QUEUE_MODE
+    choice SPROUT_QUEUE_MODE
         prompt "Default Queue Mode"
-        default FPR_QUEUE_MODE_NORMAL_DEFAULT
+        default SPROUT_QUEUE_MODE_NORMAL_DEFAULT
         help
             Select the default queue mode for incoming data packets.
-            
-        config FPR_QUEUE_MODE_NORMAL_DEFAULT
+
+        config SPROUT_QUEUE_MODE_NORMAL_DEFAULT
             bool "Normal (queue all packets)"
             help
                 Queue all incoming packets in order.
                 Consumer processes them sequentially.
                 May cause delays if processing is slow.
-                
-        config FPR_QUEUE_MODE_LATEST_ONLY_DEFAULT
+
+        config SPROUT_QUEUE_MODE_LATEST_ONLY_DEFAULT
             bool "Latest Only (keep newest, discard old)"
             help
                 Keep only the most recent complete packet.
@@ -59,228 +59,228 @@ menu "fpr"
                 Eliminates processing delay at the cost of data loss.
     endchoice
 
-    config FPR_ENABLE_LEGACY_PROTOCOL
+    config SPROUT_ENABLE_LEGACY_PROTOCOL
         bool "Enable Legacy Protocol Support"
         default y
         help
-            Enable support for legacy FPR protocol.
+            Enable support for legacy Sprout protocol.
             This allows communication with older devices using the previous protocol version.
             Disable to save memory if legacy support is not needed.
-    
-    config FPR_RECONNECT_TASK_CORE_PIN_VALUE
+
+    config SPROUT_RECONNECT_TASK_CORE_PIN_VALUE
         int "Reconnect Task Core Pin Value"
         default 0
         help
-            Set the core pin value for the FPR reconnect task.
+            Set the core pin value for the Sprout reconnect task.
             This determines which CPU core the reconnect task will run on.
 
-    config FPR_QUEUE_SEND_TIMEOUT_MS
-        int "FPR Queue Send Timeout (ms)"
+    config SPROUT_QUEUE_SEND_TIMEOUT_MS
+        int "Sprout Queue Send Timeout (ms)"
         default 100
         range 0 10000
         help
-            Set the timeout in milliseconds for sending to the FPR queue.
-    
-    config FPR_BROADCAST_RETRY_INTERVAL_MS
-        int "FPR Broadcast Retry Interval (ms)"
+            Set the timeout in milliseconds for sending to the Sprout queue.
+
+    config SPROUT_BROADCAST_RETRY_INTERVAL_MS
+        int "Sprout Broadcast Retry Interval (ms)"
         default 5000
         range 1000 60000
         help
-            Set the interval in milliseconds for retrying FPR broadcast messages.
-        
-    config FPR_CLIENT_CONNECTION_MAX_WAIT_MS
-        int "FPR Client Connection Max Wait (ms)"
+            Set the interval in milliseconds for retrying Sprout broadcast messages.
+
+    config SPROUT_CLIENT_CONNECTION_MAX_WAIT_MS
+        int "Sprout Client Connection Max Wait (ms)"
         default 10000
         range 1000 60000
         help
-            Set the maximum wait time in milliseconds for FPR client connections.
-    
-    config FPR_CLIENT_BROADCAST_INTERVAL_MS
-        int "FPR Client Broadcast Interval (ms)"
+            Set the maximum wait time in milliseconds for Sprout client connections.
+
+    config SPROUT_CLIENT_BROADCAST_INTERVAL_MS
+        int "Sprout Client Broadcast Interval (ms)"
         default 1000
         range 500 10000
         help
-            Set the interval in milliseconds for FPR client broadcast messages.
+            Set the interval in milliseconds for Sprout client broadcast messages.
 
-    config FPR_CLIENT_WAIT_CHECK_INTERVAL_MS
-        int "FPR Client Wait Check Interval (ms)"
+    config SPROUT_CLIENT_WAIT_CHECK_INTERVAL_MS
+        int "Sprout Client Wait Check Interval (ms)"
         default 500
         range 100 5000
         help
-            Set the interval in milliseconds for checking FPR client wait status.
+            Set the interval in milliseconds for checking Sprout client wait status.
 
-    config FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS
-        int "FPR Manual Connect Retry Interval (ms)"
+    config SPROUT_MANUAL_CONNECT_RETRY_INTERVAL_MS
+        int "Sprout Manual Connect Retry Interval (ms)"
         default 3000
         range 1000 60000
         help
-            Set the interval in milliseconds for retrying manual FPR connections.
+            Set the interval in milliseconds for retrying manual Sprout connections.
 
-    config FPR_HOST_SCAN_BROADCAST_INTERVAL_MS
-        int "FPR Host Scan Broadcast Interval (ms)"
+    config SPROUT_HOST_SCAN_BROADCAST_INTERVAL_MS
+        int "Sprout Host Scan Broadcast Interval (ms)"
         default 2000
         range 500 10000
         help
-            Set the interval in milliseconds for FPR host scan broadcast messages.
+            Set the interval in milliseconds for Sprout host scan broadcast messages.
 
-    config FPR_HOST_SCAN_POLL_INTERVAL_MS
-        int "FPR Host Scan Poll Interval (ms)"
+    config SPROUT_HOST_SCAN_POLL_INTERVAL_MS
+        int "Sprout Host Scan Poll Interval (ms)"
         default 1000
         range 500 10000
         help
-            Set the interval in milliseconds for polling FPR host scan status.
+            Set the interval in milliseconds for polling Sprout host scan status.
 
-    config FPR_RECONNECT_TIMEOUT_MS
-        int "FPR Reconnect Timeout (ms)"
+    config SPROUT_RECONNECT_TIMEOUT_MS
+        int "Sprout Reconnect Timeout (ms)"
         default 15000
         range 1000 60000
         help
-            Set the timeout in milliseconds for FPR reconnection attempts.
-        
-    config FPR_KEEPALIVE_INTERVAL_MS
-        int "FPR Keepalive Interval (ms)"
+            Set the timeout in milliseconds for Sprout reconnection attempts.
+
+    config SPROUT_KEEPALIVE_INTERVAL_MS
+        int "Sprout Keepalive Interval (ms)"
         default 5000
         range 1000 60000
         help
-            Set the interval in milliseconds for FPR keepalive messages.
+            Set the interval in milliseconds for Sprout keepalive messages.
 
-    config FPR_DEBUG
-        bool "Enable FPR Debug Output"
+    config SPROUT_DEBUG
+        bool "Enable Sprout Debug Output"
         default n
         help
-            Enable debug output for the FPR component.
+            Enable debug output for the Sprout component.
             Useful for troubleshooting and development.
 
-    config FPR_DEBUG_LOG_CLIENT_DATA_RECEIVE
+    config SPROUT_DEBUG_LOG_CLIENT_DATA_RECEIVE
         bool "Enable Client Data Receive Debug Logging"
         default n
-        depends on FPR_DEBUG
+        depends on SPROUT_DEBUG
         help
             Enable detailed debug logging for client mode data reception.
             Shows information about received packets in client mode.
 
-    config FPR_DEBUG_LOG_HOST_DATA_RECEIVE
+    config SPROUT_DEBUG_LOG_HOST_DATA_RECEIVE
         bool "Enable Host Data Receive Debug Logging"
         default n
-        depends on FPR_DEBUG
+        depends on SPROUT_DEBUG
         help
             Enable detailed debug logging for host mode data reception.
             Shows information about received packets in host mode.
 
-    config FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE
+    config SPROUT_DEBUG_LOG_EXTENDER_DATA_RECEIVE
         bool "Enable Extender Data Receive Debug Logging"
         default n
-        depends on FPR_DEBUG
+        depends on SPROUT_DEBUG
         help
             Enable detailed debug logging for extender mode data reception.
             Shows information about received packets in extender mode.
 
-    config FPR_TASK_PRIORITY
-        int "FPR Task Priority"
+    config SPROUT_TASK_PRIORITY
+        int "Sprout Task Priority"
         default 2
         range 0 25
         help
-            Set the priority for the FPR tasks.
+            Set the priority for the Sprout tasks.
 
-    config FPR_TASK_STACK_SIZE
-        int "FPR Task Stack Size"
+    config SPROUT_TASK_STACK_SIZE
+        int "Sprout Task Stack Size"
         default 4096
         range 1024 16384
         help
-            Set the stack size for the FPR tasks.
-    config FPR_TEST_MODE
-        bool "Enable FPR Test Mode"
+            Set the stack size for the Sprout tasks.
+    config SPROUT_TEST_MODE
+        bool "Enable Sprout Test Mode"
         default n
         help
-            Enable test mode for the FPR component.
+            Enable test mode for the Sprout component.
             This mode is intended for development and testing purposes only.
-    
-    choice FPR_TEST_ROLE
-        prompt "Select FPR Test Role"
-        depends on FPR_TEST_MODE
-        default FPR_TEST_HOST
+
+    choice SPROUT_TEST_ROLE
+        prompt "Select Sprout Test Role"
+        depends on SPROUT_TEST_MODE
+        default SPROUT_TEST_HOST
         help
-            Select the role for FPR testing.
+            Select the role for Sprout testing.
             Choose between Host, Client, Extender, or Data Size Test roles for testing purposes.
-        config FPR_TEST_HOST 
+        config SPROUT_TEST_HOST
             bool "Host"
             help
-                Enable the FPR test host role.
+                Enable the Sprout test host role.
 
-        config FPR_TEST_CLIENT 
+        config SPROUT_TEST_CLIENT
             bool "Client"
             help
-                Enable the FPR test client role.
+                Enable the Sprout test client role.
 
-        config FPR_TEST_EXTENDER 
+            config SPROUT_TEST_EXTENDER
             bool "Extender"
             help
-                Enable the FPR test extender role.
+                Enable the Sprout test extender role.
 
-        config FPR_TEST_DATA_SIZES
+        config SPROUT_TEST_DATA_SIZES
             bool "Data Size Test"
             help
-                Enable the FPR data size test mode.
+                Enable the Sprout data size test mode.
                 Tests various payload sizes to validate fragmentation and reassembly.
-    endchoice 
+    endchoice
 
-    config FPR_TEST_AUTO_START
-        bool "Enable FPR Test Auto Start"
+    config SPROUT_TEST_AUTO_START
+        bool "Enable Sprout Test Auto Start"
         default y
-        depends on FPR_TEST_MODE
+        depends on SPROUT_TEST_MODE
         help
-            Automatically start the FPR test on boot.
+            Automatically start the Sprout test on boot.
             Useful for automated testing scenarios.
 
     menu "Data Size Test Configuration"
-        depends on FPR_TEST_DATA_SIZES
-        visible if FPR_TEST_DATA_SIZES
+        depends on SPROUT_TEST_DATA_SIZES
+        visible if SPROUT_TEST_DATA_SIZES
 
-        choice FPR_DATA_SIZE_TEST_MODE
+        choice SPROUT_DATA_SIZE_TEST_MODE
             prompt "Data Size Test Mode"
-            default FPR_DATA_SIZE_TEST_CLIENT
+            default SPROUT_DATA_SIZE_TEST_CLIENT
             help
                 Select whether this device acts as Host or Client in the data size test.
 
-            config FPR_DATA_SIZE_TEST_HOST
+            config SPROUT_DATA_SIZE_TEST_HOST
                 bool "Host (Receiver/Echo)"
                 help
                     Device will act as host, receiving data and optionally echoing it back.
 
-            config FPR_DATA_SIZE_TEST_CLIENT
+            config SPROUT_DATA_SIZE_TEST_CLIENT
                 bool "Client (Sender)"
                 help
                     Device will act as client, sending test payloads to the host.
         endchoice
 
-        config FPR_DATA_SIZE_TEST_AUTO_MODE
+        config SPROUT_DATA_SIZE_TEST_AUTO_MODE
             bool "Enable Auto Connection Mode"
             default y
             help
                 Enable automatic connection mode (vs manual).
 
-        config FPR_DATA_SIZE_TEST_ECHO_MODE
+        config SPROUT_DATA_SIZE_TEST_ECHO_MODE
             bool "Enable Echo Mode"
             default y
             help
                 Host echoes received data back to client for verification.
                 Client waits for and verifies echo responses.
 
-        config FPR_DATA_SIZE_TEST_INTERVAL_MS
+        config SPROUT_DATA_SIZE_TEST_INTERVAL_MS
             int "Test Interval (ms)"
             default 2000
             range 500 10000
             help
                 Interval in milliseconds between sending test payloads.
 
-        config FPR_DATA_SIZE_TEST_RX_TIMEOUT_MS
+        config SPROUT_DATA_SIZE_TEST_RX_TIMEOUT_MS
             int "Receive Timeout (ms)"
             default 5000
             range 1000 30000
             help
                 Timeout in milliseconds for waiting for echo responses.
 
-        config FPR_DATA_SIZE_TEST_VERIFY_PAYLOAD
+        config SPROUT_DATA_SIZE_TEST_VERIFY_PAYLOAD
             bool "Enable Strict Payload Verification"
             default y
             help

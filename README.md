@@ -24,6 +24,8 @@
 - **Connection Management**: Automatic reconnection and keepalive mechanisms  
 - **Peer Authentication**: Control which devices can join your network
 - **Robust Protocol**: Handles packet loss, interference, and device mobility
+- **Peer Blocking**: Block specific MAC addresses from connecting
+- **Allowlist Filtering**: Restrict connections to only approved devices
 
 ### **Flexible Network Topologies**
 - **Host Mode**: Act as a central coordinator accepting client connections
@@ -67,50 +69,14 @@
 ### Installation
 
 1. **Add FPR as a component to your ESP-IDF project:**
-   ```bash
-   cd your_project/components
-   git clone https://github.com/repvi/fpr.git
-   ```
+   Navigate to your project's components directory and clone the repository.
 
 2. **Or use the ESP Component Manager:**
-   ```yaml
-   # idf_component.yml
-   dependencies:
-     fpr:
-       git: https://github.com/repvi/fpr.git
-   ```
+   Add the dependency to your idf_component.yml configuration file.
 
 ### Basic Usage
 
-```c
-#include "fpr/fpr.h"
-
-// Callback for received data
-void on_data_received(void *peer_addr, void *data, void *user_data) {
-    uint8_t *mac = (uint8_t*)peer_addr;
-    printf("Data from %02x:%02x:%02x:%02x:%02x:%02x: %s\n", 
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (char*)data);
-}
-
-void app_main() {
-    // Initialize WiFi (required for ESP-NOW)
-    wifi_init();
-    
-    // Initialize FPR network
-    fpr_network_init("MyDevice");
-    
-    // Register callback for incoming data
-    fpr_register_receive_callback(on_data_received);
-    
-    // Set device mode and start network
-    fpr_network_set_mode(FPR_MODE_HOST);  // or FPR_MODE_CLIENT
-    fpr_network_start();
-    
-    // Send data to peers
-    char message[] = "Hello from FPR!";
-    fpr_network_broadcast(message, strlen(message), 1);
-}
-```
+To get started with FPR, you need to initialize the network, set your device mode (host or client), register a callback for incoming data, and start the network. The library handles discovery, connection management, and data transmission automatically. You can send messages to specific peers or broadcast to all connected devices.
 
 ## 💡 Use Cases & Applications
 
@@ -154,27 +120,13 @@ void app_main() {
 
 ## 🏗️ Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        FPR Network                          │
-├─────────────────────────────────────────────────────────────┤
-│  Application Layer                                          │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐│
-│  │ Your App    │ │ Callbacks   │ │ Message Handling        ││
-│  └─────────────┘ └─────────────┘ └─────────────────────────┘│
-├─────────────────────────────────────────────────────────────┤
-│  FPR Protocol Layer                                         │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐│
-│  │ Discovery   │ │ Routing     │ │ Connection Management   ││
-│  │ & Handshake │ │ & Forwarding│ │ & Security              ││
-│  └─────────────┘ └─────────────┘ └─────────────────────────┘│
-├─────────────────────────────────────────────────────────────┤
-│  ESP-NOW Layer (Espressif)                                  │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────────┐│
-│  │ MAC/PHY     │ │ Encryption  │ │ Low-Level Transport     ││
-│  └─────────────┘ └─────────────┘ └─────────────────────────┘│
-└─────────────────────────────────────────────────────────────┘
-```
+FPR is organized into three main layers:
+
+**Application Layer**: Your application interacts with FPR through a clean API that provides callbacks for received data and functions for sending messages. Message handling and data routing are managed automatically.
+
+**FPR Protocol Layer**: This layer handles device discovery, secure handshakes, routing decisions, and connection management. It implements the mesh routing logic and security protocols.
+
+**ESP-NOW Layer**: The foundation layer provided by Espressif handles the physical transmission, MAC addressing, and low-level encryption.
 
 ## 📚 Documentation
 
@@ -196,13 +148,7 @@ void app_main() {
 
 ## 🔧 Configuration Options
 
-FPR provides extensive configuration through ESP-IDF's Kconfig system. Key options include:
-
-```bash
-# Enable comprehensive configuration
-idf.py menuconfig
-# Navigate to: Component Config → fpr
-```
+FPR provides extensive configuration through ESP-IDF's Kconfig system. Access the configuration menu and navigate to Component Config → FPR to adjust settings.
 
 **Essential Settings:**
 - **Connection Timeouts**: Adjust for your network conditions
@@ -213,32 +159,14 @@ idf.py menuconfig
 
 ## 🧪 Testing & Validation
 
-FPR includes a comprehensive test suite designed for real-world validation:
-
-```bash
-# Quick test setup (Windows)
-.\build_test.ps1 host      # Flash to device 1
-.\build_test.ps1 client    # Flash to device 2
-
-# Linux/Mac
-./build_test.sh host       # Flash to device 1  
-./build_test.sh client     # Flash to device 2
-```
-
-**Test Scenarios Included:**
-- ✅ Two-device communication (host-client)
-- ✅ Multi-hop mesh routing (3+ devices)
-- ✅ Connection resilience (power cycling, range testing)
-- ✅ Multiple client handling
-- ✅ Manual vs automatic connection modes
-- ✅ Security handshake validation
-- ✅ Performance and latency benchmarks
+FPR includes a comprehensive test suite designed for real-world validation. The test suite covers scenarios including two-device communication, multi-hop mesh routing, connection resilience through power cycling and range testing, multiple client handling, manual versus automatic connection modes, security handshake validation, and performance benchmarks.
 
 ## 🛡️ Security Features
 
 - **Secure Handshake**: Mutual authentication before data exchange
 - **Connection Control**: Manual approval mode for sensitive applications
-- **Peer Blocking**: Blacklist unwanted devices
+- **Peer Blocking**: Blacklist unwanted devices by MAC address
+- **Allowlist Filtering**: Restrict connections to only approved MAC addresses
 - **Private Networks**: Control network visibility
 - **Protocol Versioning**: Ensure only compatible devices connect
 
@@ -246,7 +174,7 @@ FPR includes a comprehensive test suite designed for real-world validation:
 
 | Version | Release Date | Key Features |
 |---------|--------------|--------------|
-| **1.0.0** | December 2024 | Official stable release with LTS support, host/client modes fully functional, security handshake, fragmentation support |
+| **1.0.0** | December 2024 | Official stable release with LTS support, host/client modes fully functional, security handshake, fragmentation support, peer blocking, allowlist filtering |
 | **0.x** | 2024-2025 | Pre-versioning development (legacy support) |
 
 **Development Roadmap:**
@@ -272,12 +200,7 @@ FPR includes a comprehensive test suite designed for real-world validation:
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 **Development Setup:**
-```bash
-git clone https://github.com/repvi/fpr.git
-cd fpr
-# Setup ESP-IDF environment
-# Run tests to validate setup
-```
+Clone the repository, set up your ESP-IDF environment, and run tests to validate your setup.
 
 ## 📄 License
 

@@ -4,7 +4,7 @@ This directory contains test programs for the FPR (Firmware Peer-to-Peer Routing
 
 ## Test Files
 
-### 1. `test_fpr_host.c`
+### 1. `test_sprout_host.c`
 Tests the FPR library in Host mode.
 
 **Features:**
@@ -30,14 +30,14 @@ Tests the FPR library in Host mode.
 
 **Expected Output:**
 ```
-[FPR_HOST_TEST] FPR Host is now RUNNING
-[FPR_HOST_TEST] [DISCOVERY] Peer #1: FPR-Client-Test (xx:xx:xx:xx:xx:xx) RSSI: -45 dBm
-[FPR_HOST_TEST] [CONNECT] Peer connected: FPR-Client-Test
-[FPR_HOST_TEST] [DATA] Message #1 from xx:xx:xx:xx:xx:xx (hops: 0, size: 25 bytes)
-[FPR_HOST_TEST] [ECHO] Echo sent successfully
+[SPROUT_HOST_TEST] FPR Host is now RUNNING
+[SPROUT_HOST_TEST] [DISCOVERY] Peer #1: SPROUT-Client-Test (xx:xx:xx:xx:xx:xx) RSSI: -45 dBm
+[SPROUT_HOST_TEST] [CONNECT] Peer connected: SPROUT-Client-Test
+[SPROUT_HOST_TEST] [DATA] Message #1 from xx:xx:xx:xx:xx:xx (hops: 0, size: 25 bytes)
+[SPROUT_HOST_TEST] [ECHO] Echo sent successfully
 ```
 
-### 2. `test_fpr_client.c`
+### 2. `test_sprout_client.c`
 Tests the FPR library in Client mode.
 
 **Features:**
@@ -64,15 +64,15 @@ Tests the FPR library in Client mode.
 
 **Expected Output:**
 ```
-[FPR_CLIENT_TEST] FPR Client is now RUNNING
-[FPR_CLIENT_TEST] [DISCOVERY] Host found #1: FPR-Host-Test (xx:xx:xx:xx:xx:xx) RSSI: -50 dBm
-[FPR_CLIENT_TEST] [CONNECT] *** Connected to host: FPR-Host-Test ***
-[FPR_CLIENT_TEST] [SEND] Sending message: "Test message #1 from client"
-[FPR_CLIENT_TEST] [SEND] Message sent successfully
-[FPR_CLIENT_TEST] [DATA] Message #1 (echo response)
+[SPROUT_CLIENT_TEST] FPR Client is now RUNNING
+[SPROUT_CLIENT_TEST] [DISCOVERY] Host found #1: SPROUT-Host-Test (xx:xx:xx:xx:xx:xx) RSSI: -50 dBm
+[SPROUT_CLIENT_TEST] [CONNECT] *** Connected to host: SPROUT-Host-Test ***
+[SPROUT_CLIENT_TEST] [SEND] Sending message: "Test message #1 from client"
+[SPROUT_CLIENT_TEST] [SEND] Message sent successfully
+[SPROUT_CLIENT_TEST] [DATA] Message #1 (echo response)
 ```
 
-### 3. `test_fpr_extender.c`
+### 3. `test_sprout_extender.c`
 Tests the FPR library in Extender mode.
 
 **Features:**
@@ -89,43 +89,43 @@ Tests the FPR library in Extender mode.
 
 **Expected Output:**
 ```
-[FPR_EXTENDER_TEST] FPR Extender is now RUNNING
-[FPR_EXTENDER_TEST] [RELAY] Message #1
-[FPR_EXTENDER_TEST]   From: xx:xx:xx:xx:xx:xx
-[FPR_EXTENDER_TEST]   To: yy:yy:yy:yy:yy:yy
-[FPR_EXTENDER_TEST]   Hops: 1
+[SPROUT_EXTENDER_TEST] FPR Extender is now RUNNING
+[SPROUT_EXTENDER_TEST] [RELAY] Message #1
+[SPROUT_EXTENDER_TEST]   From: xx:xx:xx:xx:xx:xx
+[SPROUT_EXTENDER_TEST]   To: yy:yy:yy:yy:yy:yy
+[SPROUT_EXTENDER_TEST]   Hops: 1
 ```
 
 ## Test Scenarios
 
 ### Scenario 1: Basic Host-Client Communication
-1. Flash Device 1 with `test_fpr_host.c` (auto mode)
-2. Flash Device 2 with `test_fpr_client.c` (auto mode)
+1. Flash Device 1 with `test_sprout_host.c` (auto mode)
+2. Flash Device 2 with `test_sprout_client.c` (auto mode)
 3. Power both devices
 4. Observe automatic connection and message exchange
 
 ### Scenario 2: Manual Connection with Approval
-1. Flash Device 1 with `test_fpr_host.c` (manual mode)
-2. Flash Device 2 with `test_fpr_client.c` (manual mode)
+1. Flash Device 1 with `test_sprout_host.c` (manual mode)
+2. Flash Device 2 with `test_sprout_client.c` (manual mode)
 3. Observe host scanning and approval process
 4. Watch connection establishment
 
 ### Scenario 3: Multi-Hop Mesh Network
-1. Flash Device 1 with `test_fpr_host.c`
-2. Flash Device 2 with `test_fpr_extender.c`
-3. Flash Device 3 with `test_fpr_client.c`
+1. Flash Device 1 with `test_sprout_host.c`
+2. Flash Device 2 with `test_sprout_extender.c`
+3. Flash Device 3 with `test_sprout_client.c`
 4. Place devices in line (Host -> Extender -> Client)
 5. Observe messages routing through extender
 
 ### Scenario 4: Multiple Clients
-1. Flash Device 1 with `test_fpr_host.c` (max_peers = 5)
-2. Flash Devices 2-4 with `test_fpr_client.c`
+1. Flash Device 1 with `test_sprout_host.c` (max_peers = 5)
+2. Flash Devices 2-4 with `test_sprout_client.c`
 3. Observe multiple clients connecting
 4. Watch host broadcast messages to all
 
 ### Scenario 5: Connection Stress Test
-1. Flash Device 1 with `test_fpr_host.c`
-2. Flash Device 2 with `test_fpr_client.c`
+1. Flash Device 1 with `test_sprout_host.c`
+2. Flash Device 2 with `test_sprout_client.c`
 3. Power cycle client device repeatedly
 4. Observe reconnection behavior and statistics
 
@@ -133,25 +133,25 @@ Tests the FPR library in Extender mode.
 
 ### Change Connection Mode
 ```c
-// In test_fpr_host.c or test_fpr_client.c
+// In test_sprout_host.c or test_sprout_client.c
 #define TEST_AUTO_MODE 0  // Change to 0 for manual mode
 ```
 
 ### Adjust Message Frequency
 ```c
-// In test_fpr_client.c
+// In test_sprout_client.c
 #define TEST_MESSAGE_INTERVAL_MS 1000  // Send every 1 second
 ```
 
 ### Change Peer Limit
 ```c
-// In test_fpr_host.c
+// In test_sprout_host.c
 #define TEST_MAX_PEERS 10  // Allow up to 10 clients
 ```
 
 ### Disable Echo
 ```c
-// In test_fpr_host.c
+// In test_sprout_host.c
 #define TEST_ECHO_ENABLED 0  // Don't echo back
 ```
 
@@ -207,9 +207,9 @@ Edit `components/fpr/test/CMakeLists.txt` and uncomment the desired test:
 ```cmake
 # Select which test to build (uncomment ONE):
 set(TEST_SRCS
-    "test_fpr_host.c"      # Uncomment for Host test
-    # "test_fpr_client.c"    # Uncomment for Client test
-    # "test_fpr_extender.c"  # Uncomment for Extender test
+    "test_sprout_host.c"      # Uncomment for Host test
+    # "test_sprout_client.c"    # Uncomment for Client test
+    # "test_sprout_extender.c"  # Uncomment for Extender test
 )
 ```
 
@@ -224,7 +224,7 @@ idf.py build flash monitor
 cp main/main.cpp main/main.cpp.backup
 
 # Copy test file
-cp components/fpr/test/test_fpr_host.c main/main.cpp
+cp components/fpr/test/test_sprout_host.c main/main.cpp
 
 # Build
 idf.py build flash monitor
@@ -238,7 +238,7 @@ cp main/main.cpp.backup main/main.cpp
 **No connection:**
 - Ensure both devices are powered and in range
 - Check WiFi is initialized properly
-- Verify `fpr_network_start()` is called on both
+- Verify `sprout_start()` is called on both
 - Check serial output for error messages
 
 **Messages not received:**
@@ -274,7 +274,7 @@ CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y  # For verbose output
 
 Or at runtime:
 ```c
-esp_log_level_set("FPR_HOST_TEST", ESP_LOG_DEBUG);
+esp_log_level_set("SPROUT_HOST_TEST", ESP_LOG_DEBUG);
 esp_log_level_set("FPR", ESP_LOG_DEBUG);
 ```
 

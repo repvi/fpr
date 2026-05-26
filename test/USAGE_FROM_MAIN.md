@@ -1,216 +1,158 @@
-# Using FPR Tests from main.cpp
+# Using SPROUT from main.cpp
 
-The FPR test libraries are now callable from your `main.cpp` file. Include the appropriate header and call the test start function.
+This guide explains how to use the SPROUT API directly in your application.
 
-## Example: Host Test
+## Overview
 
-```cpp
-#include "fpr.h"
-#include "test_fpr_host.h"
+SPROUT provides a simple, function-based API. Use the base functions directly - no wrapper functions are needed.
 
-extern "C" void app_main(void)
+## Basic Usage
+
+### Step 1: Include the SPROUT Header
+
+```c
+#include "sprout/sprout.h"
+```
+
+### Step 2: Initialize SPROUT
+
+```c
+esp_err_t ret = sprout_init("MyDeviceName");
+if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "SPROUT init failed: %s", esp_err_to_name(ret));
+    return;
+}
+```
+
+### Step 3: Register Callbacks
+
+```c
+static void on_data_received(void *peer_addr, void *data, void *user_data)
 {
-    // Configure host test
-    fpr_host_test_config_t config = {
-        .auto_mode = true,      // Auto-approve connections
-        .max_peers = 5,         // Max 5 peers
-        .echo_enabled = true    // Echo data back
-    };
+    ESP_LOGI(TAG, "Received data from peer");
+}
+
+sprout_register_receive_callback(on_data_received, NULL);
+```
+
+### Step 4: Set Mode and Start
+
+```c
+// Set mode (HOST, CLIENT, EXTENDER, or BROADCAST)
+sprout_set_mode(SPROUT_MODE_HOST);
+
+// Start the network
+ret = sprout_start();
+if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "SPROUT start failed: %s", esp_err_to_name(ret));
+    return;
+}
+```
+
+## Complete Example
+
+```c
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "sprout/sprout.h"
+#include "esp_log.h"
+
+static const char *TAG = "MY_APP";
+
+static void on_data_received(void *peer_addr, void *data, void *user_data)
+{
+    ESP_LOGI(TAG, "Received data from peer");
+}
+
+void app_main()
+{
+    ESP_LOGI(TAG, "Starting SPROUT");
     
-    // Start the test
-    esp_err_t err = fpr_host_test_start(&config);
-    if (err != ESP_OK) {
-        printf("Host test failed to start: %s\n", esp_err_to_name(err));
+    // Initialize
+    esp_err_t ret = sprout_init("MyDevice");
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Init failed: %s", esp_err_to_name(ret));
         return;
     }
     
-    // Test runs in background tasks
-    // You can add your own code here
+    // Register callback
+    sprout_register_receive_callback(on_data_received, NULL);
     
-    // Optional: Get statistics
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(30000));
-        
-        uint32_t disc, conn, msgs, bytes;
-        fpr_host_test_get_stats(&disc, &conn, &msgs, &bytes);
-        printf("Host stats - Discovered: %lu, Connected: %lu, Messages: %lu\n",
-               disc, conn, msgs);
-    }
-}
-```
-
-## Example: Client Test
-
-```cpp
-#include "fpr.h"
-#include "test_fpr_client.h"
-
-extern "C" void app_main(void)
-{
-    // Configure client test
-    fpr_client_test_config_t config = {
-        .auto_mode = true,               // Auto-connect to first host
-        .scan_duration_ms = 5000,        // Scan for 5 seconds (manual mode)
-        .message_interval_ms = 5000      // Send message every 5 seconds
-    };
+    // Set mode
+    sprout_set_mode(SPROUT_MODE_HOST);
     
-    // Start the test
-    esp_err_t err = fpr_client_test_start(&config);
-    if (err != ESP_OK) {
-        printf("Client test failed to start: %s\n", esp_err_to_name(err));
+    // Start
+    ret = sprout_start();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Start failed: %s", esp_err_to_name(ret));
         return;
     }
     
-    // Test runs in background tasks
-    // You can add your own code here
+    ESP_LOGI(TAG, "SPROUT running");
     
-    // Optional: Monitor connection
+    // Main loop
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(10000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
         
-        if (fpr_client_test_is_connected()) {
-            printf("Client is connected!\n");
-        } else {
-            printf("Client is not connected.\n");
-        }
+        // Example: broadcast message
+        const char *msg = "Hello";
+        sprout_broadcast((uint8_t *)msg, strlen(msg), SPROUT_PACKAGE_DATA);
     }
 }
 ```
 
-## Example: Extender Test
+## Common Operations
 
-```cpp
-#include "fpr.h"
-#include "test_fpr_extender.h"
+### Send Data to Peer
 
-extern "C" void app_main(void)
-{
-    // Start extender test (no configuration needed)
-    esp_err_t err = fpr_extender_test_start();
-    if (err != ESP_OK) {
-        printf("Extender test failed to start: %s\n", esp_err_to_name(err));
-        return;
-    }
-    
-    printf("Extender running - relaying messages\n");
-    
-    // Test runs in background tasks
-    // You can add your own code here
-    
-    // Optional: Get relay statistics
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(20000));
-        
-        uint32_t msgs, bytes;
-        fpr_extender_test_get_stats(&msgs, &bytes);
-        printf("Relayed %lu messages, %lu bytes total\n", msgs, bytes);
-    }
+```c
+uint8_t peer_address[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+const char *data = "Hello peer";
+sprout_send(peer_address, (void *)data, strlen(data), SPROUT_PACKAGE_DATA);
+```
+
+### Broadcast Data
+
+```c
+const char *data = "Hello everyone";
+sprout_broadcast((uint8_t *)data, strlen(data), SPROUT_PACKAGE_DATA);
+```
+
+### Get Network State
+
+```c
+sprout_network_state_t state = sprout_get_state();
+ESP_LOGI(TAG, "Network state: %d", state);
+```
+
+### Check if Running
+
+```c
+if (sprout_is_loop_task_running()) {
+    ESP_LOGI(TAG, "Network loop task is running");
 }
 ```
 
-## Example: Running Multiple Tests (Advanced)
+### Stop Network
 
-You can also run different tests based on a button press or configuration:
-
-```cpp
-#include "fpr.h"
-#include "test_fpr_host.h"
-#include "test_fpr_client.h"
-#include "test_fpr_extender.h"
-
-typedef enum {
-    MODE_HOST,
-    MODE_CLIENT,
-    MODE_EXTENDER
-} test_mode_t;
-
-extern "C" void app_main(void)
-{
-    // Determine mode (e.g., from GPIO, NVS, or compile-time define)
-    test_mode_t mode = MODE_HOST;  // Change as needed
-    
-    switch (mode) {
-        case MODE_HOST: {
-            fpr_host_test_config_t config = {
-                .auto_mode = true,
-                .max_peers = 10,
-                .echo_enabled = true
-            };
-            fpr_host_test_start(&config);
-            printf("Running as HOST\n");
-            break;
-        }
-        
-        case MODE_CLIENT: {
-            fpr_client_test_config_t config = {
-                .auto_mode = true,
-                .scan_duration_ms = 5000,
-                .message_interval_ms = 3000
-            };
-            fpr_client_test_start(&config);
-            printf("Running as CLIENT\n");
-            break;
-        }
-        
-        case MODE_EXTENDER: {
-            fpr_extender_test_start();
-            printf("Running as EXTENDER\n");
-            break;
-        }
-    }
-    
-    // Your application code continues here
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(60000));
-        printf("Application running...\n");
-    }
-}
+```c
+sprout_stop();
 ```
 
-## Stopping Tests
+### Deinitialize
 
-If you need to stop a test (e.g., to switch modes):
-
-```cpp
-// Stop host test
-fpr_host_test_stop();
-
-// Stop client test
-fpr_client_test_stop();
-
-// Stop extender test
-fpr_extender_test_stop();
+```c
+sprout_deinit();
 ```
 
-## Build Instructions
+## Modes
 
-1. Edit your `main/main.cpp` with one of the examples above
-2. Build normally:
-   ```bash
-   idf.py build
-   ```
-3. Flash and monitor:
-   ```bash
-   idf.py flash monitor
-   ```
+- **SPROUT_MODE_HOST**: Accept connections from clients
+- **SPROUT_MODE_CLIENT**: Connect to hosts
+- **SPROUT_MODE_EXTENDER**: Relay messages in mesh network
+- **SPROUT_MODE_BROADCAST**: Send-only mode
 
-## Notes
+## See Also
 
-- All test functions are non-blocking and run in background FreeRTOS tasks
-- You can call these functions alongside your own application code
-- The test library automatically initializes WiFi, NVS, and FPR
-- Multiple tests should not be run simultaneously (they will conflict)
-- Each test creates its own FreeRTOS tasks for statistics, monitoring, etc.
-- Configuration is optional - passing NULL uses default values
-
-## Header Files
-
-Include these headers in your main.cpp:
-
-```cpp
-#include "test_fpr_host.h"      // For host test functions
-#include "test_fpr_client.h"    // For client test functions
-#include "test_fpr_extender.h"  // For extender test functions
-```
-
-All headers are located in: `components/fpr/test/`
+- [API.md](../docs/API.md) - Complete API reference
+- [README.md](../README.md) - Project overview

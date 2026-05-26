@@ -14,32 +14,32 @@ The FPR library now includes **persistent reconnect/keepalive monitoring** that 
 ### Configuration
 ```c
 // Timing constants (in fpr.c)
-#define FPR_RECONNECT_TIMEOUT_MS 5000      // Disconnect after 5s of no traffic
-#define FPR_KEEPALIVE_INTERVAL_MS 3000     // Send keepalive every 3s
+#define SPROUT_RECONNECT_TIMEOUT_MS 5000      // Disconnect after 5s of no traffic
+#define SPROUT_KEEPALIVE_INTERVAL_MS 3000     // Send keepalive every 3s
 ```
 
 ### New API Functions
 ```c
 // Start persistent reconnect monitoring (call after discovery loop)
-esp_err_t fpr_network_start_reconnect_task(void);
+esp_err_t sprout_start_reconnect_task(void);
 
 // Stop reconnect monitoring
-esp_err_t fpr_network_stop_reconnect_task(void);
+esp_err_t sprout_stop_reconnect_task(void);
 
 // Check if reconnect task is running
-bool fpr_network_is_reconnect_task_running(void);
+bool sprout_is_reconnect_task_running(void);
 ```
 
 ## Test Files Updated
 
-### `test_fpr_client.c`
+### `test_sprout_client.c`
 - Registers data receive callback
 - Starts 20s discovery loop
 - **After loop completes**: starts reconnect task
 - Sends periodic test messages to host
 - Will automatically reconnect if host comes back after disconnect
 
-### `test_fpr_host.c`
+### `test_sprout_host.c`
 - Registers data receive callback  
 - Starts 20s broadcast loop
 - **After loop completes**: starts reconnect task
@@ -71,9 +71,9 @@ idf.py -p COM4 flash monitor  # Client device
 
 **Serial logs to watch for**:
 ```
-[FPR_CLIENT_TEST] [LOOP] Discovery loop completed
-[FPR_CLIENT_TEST] [RECONNECT] Starting persistent reconnect task...
-[FPR_CLIENT_TEST] [RECONNECT] Reconnect task started - connections will be maintained indefinitely
+[SPROUT_CLIENT_TEST] [LOOP] Discovery loop completed
+[SPROUT_CLIENT_TEST] [RECONNECT] Starting persistent reconnect task...
+[SPROUT_CLIENT_TEST] [RECONNECT] Reconnect task started - connections will be maintained indefinitely
 [fpr] Reconnect task started for client mode
 ```
 
@@ -94,8 +94,8 @@ idf.py -p COM4 flash monitor  # Client device
 **Serial logs to watch for (client)**:
 ```
 [fpr] Host timed out (age 5234 ms) - marking disconnected for reconnect
-[FPR_CLIENT_TEST] [DISCOVERY] Host found #1: FPR-Host-Test (...)
-[fpr] Connection established with FPR-Host-Test, key: 0xXXXXXXXX
+[SPROUT_CLIENT_TEST] [DISCOVERY] Host found #1: SPROUT-Host-Test (...)
+[fpr] Connection established with SPROUT-Host-Test, key: 0xXXXXXXXX
 ```
 
 ### Test Scenario 3: Reconnection After Client Disconnect
@@ -132,7 +132,7 @@ idf.py -p COM4 flash monitor  # Client device
 ```
 ========== STATISTICS ==========
 Connected: YES
-Host: FPR-Host-Test (XX:XX:XX:XX:XX:XX)
+Host: SPROUT-Host-Test (XX:XX:XX:XX:XX:XX)
 Messages sent: 120
 Messages received: 120
 ================================
@@ -145,15 +145,15 @@ Messages received: 120
    ```
    [fpr] Reconnect task started for client mode
    ```
-   If not present, ensure `fpr_network_start_reconnect_task()` is called after loop.
+   If not present, ensure `sprout_start_reconnect_task()` is called after loop.
 
 2. **Check keepalive interval**:
    - Should see periodic sends (not logged by default for keepalives)
-   - Can add debug logs in `_fpr_client_reconnect_task` / `_fpr_host_reconnect_task`
+   - Can add debug logs in `_sprout_client_reconnect_task` / `_sprout_host_reconnect_task`
 
 3. **Verify timeout detection**:
    - After disconnect, should see timeout message within 5-8s
-   - If not, check `FPR_RECONNECT_TIMEOUT_MS` value
+   - If not, check `SPROUT_RECONNECT_TIMEOUT_MS` value
 
 4. **Check discovery after timeout**:
    - Client should continue processing broadcasts even after marking host disconnected
@@ -163,7 +163,7 @@ Messages received: 120
 
 **Client doesn't reconnect**:
 - Ensure client discovery callback (`_handle_client_discovery`) processes broadcasts even when peer already exists but is disconnected
-- Check that `existing->state` is set back to `FPR_PEER_STATE_DISCOVERED` on timeout
+- Check that `existing->state` is set back to `SPROUT_PEER_STATE_DISCOVERED` on timeout
 
 **Host doesn't accept reconnection**:
 - Verify host receive handler accepts unicast from previously connected peers
@@ -186,12 +186,12 @@ Adjust timing in `fpr.c` for your use case:
 
 ```c
 // More aggressive (faster detection, more network traffic)
-#define FPR_RECONNECT_TIMEOUT_MS 3000
-#define FPR_KEEPALIVE_INTERVAL_MS 2000
+#define SPROUT_RECONNECT_TIMEOUT_MS 3000
+#define SPROUT_KEEPALIVE_INTERVAL_MS 2000
 
 // More relaxed (slower detection, less network traffic)
-#define FPR_RECONNECT_TIMEOUT_MS 10000
-#define FPR_KEEPALIVE_INTERVAL_MS 5000
+#define SPROUT_RECONNECT_TIMEOUT_MS 10000
+#define SPROUT_KEEPALIVE_INTERVAL_MS 5000
 ```
 
 Remember: `KEEPALIVE_INTERVAL` should be **less than** `RECONNECT_TIMEOUT` by at least 1-2 seconds to ensure keepalives arrive before timeout.

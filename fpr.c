@@ -73,15 +73,20 @@ static const char *TAG = "fpr";
 
 static esp_err_t _remove_peer_internal(uint8_t *peer_mac) 
 {
-    FPR_STORE_HASH_TYPE *var = _get_peer_from_map(peer_mac);
+    ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    /* The map key may point inside the store we are about to release. */
+    uint8_t mac[MAC_ADDRESS_LENGTH];
+    memcpy(mac, peer_mac, sizeof(mac));
+    FPR_STORE_HASH_TYPE *var = _get_peer_from_map(mac);
     if (var != NULL) {
-        if (!hashmap_remove(&fpr_net.peers_map, peer_mac)) {
+        if (!hashmap_remove(&fpr_net.peers_map, mac)) {
             return ESP_FAIL;
         }
         vQueueDelete(var->response_queue);
+        fpr_security_clear_keys(&var->security);
         heap_caps_free(var);
     }
-    return esp_now_del_peer(peer_mac);
+    return esp_now_del_peer(mac);
 }
 
 static void _cleanup_peer_entry(void *key, void *value, void *user_data)
@@ -94,6 +99,7 @@ static void _cleanup_peer_entry(void *key, void *value, void *user_data)
             vQueueDelete(peer->response_queue);
         }
         esp_now_del_peer(peer->peer_info.peer_addr);
+        fpr_security_clear_keys(&peer->security);
         heap_caps_free(peer);
     }
 }
@@ -180,8 +186,18 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     // Initialize sequence number counter
     fpr_net.tx_sequence_num = 0;
 
-    hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals);
-    ESP_RETURN_ON_ERROR(esp_now_init(), TAG, "Failed to initialize ESP-NOW");
+    if (!hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
+        ESP_LOGE(TAG, "Failed to allocate peers map");
+        return ESP_ERR_NO_MEM;
+    }
+    esp_err_t esp_now_err = esp_now_init();
+    if (esp_now_err != ESP_OK) {
+        /* The map is already allocated — free it or every init retry
+         * on a degraded radio leaks the bucket array. */
+        hashmap_free(&fpr_net.peers_map);
+        ESP_LOGE(TAG, "Failed to initialize ESP-NOW: %s", esp_err_to_name(esp_now_err));
+        return esp_now_err;
+    }
     
     fpr_net.state = FPR_STATE_INITIALIZED;
     fpr_net.paused = false;
@@ -197,29 +213,33 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
 // update the function
 esp_err_t fpr_network_deinit(void)
 {
+    /* Stop the radio before freeing peer state. IDF does not document
+     * whether deinit drains callbacks already in flight; this ordering
+     * alone is not a synchronization barrier for concurrent readers. */
+    esp_err_t esp_now_result = esp_now_deinit();
+
     // Stop reconnect task if running
     if (fpr_net.reconnect_task != NULL) {
         vTaskDelete(fpr_net.reconnect_task);
         fpr_net.reconnect_task = NULL;
     }
-    
+
     // Stop loop task if running
     if (fpr_net.loop_task != NULL) {
         vTaskDelete(fpr_net.loop_task);
         fpr_net.loop_task = NULL;
     }
-    
-    // Clean up peers and hashmap BEFORE memset
+
+    /* Clean up peers and hashmap BEFORE memset. esp_now_del_peer() in
+     * _cleanup_peer_entry now returns NOT_INIT — harmless; ESP-NOW is
+     * already down and the peer entries are being torn down anyway. */
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
-    
-    // Deinitialize ESP-NOW
-    esp_err_t esp_now_result = esp_now_deinit();
-    
+
     // Now safe to zero out the entire structure
     memset(&fpr_net, 0, sizeof(fpr_net));
     fpr_net.state = FPR_STATE_UNINITIALIZED;
-    
+
     return esp_now_result;
 }
 
@@ -387,16 +407,16 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
     return (result == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t fpr_network_stop_loop_task() 
+esp_err_t fpr_network_stop_loop_task()
 {
     if (fpr_net.loop_task == NULL) {
-        vTaskDelete(fpr_net.loop_task);
-        fpr_net.loop_task = NULL;
-        return ESP_OK; // Already stopped
-    }
-    else {
         return ESP_ERR_INVALID_STATE; // No loop task running
     }
+    /* vTaskDelete(NULL) deletes the CALLING task — the branch order here
+     * must never be inverted. */
+    vTaskDelete(fpr_net.loop_task);
+    fpr_net.loop_task = NULL;
+    return ESP_OK;
 }
 
 bool fpr_network_is_loop_task_running()
@@ -499,6 +519,8 @@ static esp_err_t fpr_network_send_helper(uint8_t *peer_address, void *data, int 
 
 esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id)
 {
+    ESP_RETURN_ON_FALSE(peer_address != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer address is NULL");
+
     // Validate peer exists and is connected (unless it's a control packet for handshake)
     if (package_id != FPR_PACKET_ID_CONTROL) {
         FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_address);
@@ -781,6 +803,9 @@ void fpr_print_route_table(void)
 
 bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout)
 {
+    if (peer_mac == NULL) {
+        return false;
+    }
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
     if (peer && data && data_size > 0) {
         const size_t CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
@@ -1045,11 +1070,15 @@ static void _clear_all_peers_callback(void *key, void *value, void *user_data)
     if (peer) {
         // Remove from ESP-NOW
         esp_now_del_peer(mac);
-        
+
         // Free response queue if it exists
         if (peer->response_queue != NULL) {
             vQueueDelete(peer->response_queue);
         }
+        /* The peer store itself is owned by the map entry — free it like
+         * _cleanup_peer_entry() does, or every cleared peer leaks. */
+        fpr_security_clear_keys(&peer->security);
+        heap_caps_free(peer);
     }
 }
 

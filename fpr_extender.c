@@ -118,7 +118,10 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
     }
     
     fpr_net.stats.packets_received++;
-    fpr_package_t *package = (fpr_package_t *)data;
+    /* Forwarding adjusts hop metadata, not the driver-owned RX buffer. */
+    fpr_package_t received;
+    memcpy(&received, data, sizeof(received));
+    fpr_package_t *package = &received;
     
     // Version handling (using fpr_handle.h)
     if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {

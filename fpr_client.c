@@ -21,6 +21,7 @@ typedef struct {
     char name[FPR_CONNECT_NAME_SIZE];
     size_t name_size; // caller buffer size (may be 0)
     bool found;
+    bool found_connected;
 } host_search_ctx_t;
 
 typedef struct {
@@ -142,7 +143,7 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
         return;
     }
     
-    fpr_package_t *package = (fpr_package_t *)data;
+    const fpr_package_t *package = (const fpr_package_t *)data;
     
     // Version handling (using fpr_handle.h)
     if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {
@@ -153,7 +154,14 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
     // Application data packets use other IDs (0 or positive)
     bool is_control_packet = (package->id == FPR_PACKET_ID_CONTROL);
     
-    fpr_connect_t *info = &package->protocol.connect_info;
+    /* Sanitize a local control message, never the driver-owned packet:
+     * the same union holds application bytes for non-control packets. */
+    fpr_connect_t control_info = {0};
+    if (is_control_packet) {
+        memcpy(&control_info, &package->protocol.connect_info, sizeof(control_info));
+        control_info.name[FPR_CONNECT_NAME_SIZE - 1] = '\0';
+    }
+    const fpr_connect_t *info = &control_info;
     bool is_broadcast = is_address_broadcast(esp_now_info->des_addr);
     
     // Handle broadcast discovery messages from host (always control packets)
@@ -175,12 +183,8 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                 if (known_host->sec_state == FPR_SEC_STATE_NONE) {
                     ESP_LOGI(TAG, "Host %s broadcast received - reinitiating connection (current state=%d, connected=%d)",
                              info->name, known_host->sec_state, known_host->is_connected);
-                    // Reset security state and reconnect (state reset is always safe)
-                    known_host->sec_state = FPR_SEC_STATE_NONE;
-                    known_host->is_connected = false;
-                    known_host->state = FPR_PEER_STATE_DISCOVERED;
-                    known_host->security.pwk_valid = false;
-                    known_host->security.lwk_valid = false;
+                    // Reset connection/session state and reconnect
+                    _reset_peer_connection(known_host, FPR_PEER_STATE_DISCOVERED);
                     _update_peer_rssi_and_timestamp(known_host, esp_now_info);
 
                     // Decide whether to initiate handshake automatically based on mode
@@ -240,11 +244,7 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                     if (existing->sec_state >= FPR_SEC_STATE_LWK_SENT) {
                         ESP_LOGI(TAG, "Host %s appears to have restarted (received PWK while in state %d) - resetting connection",
                                  existing->name, existing->sec_state);
-                        existing->sec_state = FPR_SEC_STATE_NONE;
-                        existing->is_connected = false;
-                        existing->state = FPR_PEER_STATE_DISCOVERED;
-                        existing->security.pwk_valid = false;
-                        existing->security.lwk_valid = false;
+                        _reset_peer_connection(existing, FPR_PEER_STATE_DISCOVERED);
                     }
                     
                     // Only process if we haven't already received and processed a PWK
@@ -303,9 +303,13 @@ void _find_host_callback(void *key, void *value, void *user_data)
     (void)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     host_search_ctx_t *ctx = (host_search_ctx_t *)user_data;
-    // Find host that is either fully connected OR in the process of connecting
-    // (state >= DISCOVERED means we know about this host)
-    if (peer && peer->state >= FPR_PEER_STATE_DISCOVERED && !ctx->found) {
+    // Hosts we can use are DISCOVERED/PENDING/CONNECTED — REJECTED and
+    // BLOCKED are deliberately excluded. Prefer a CONNECTED host over a
+    // merely-known one when several peers exist.
+    const bool usable = peer && peer->state <= FPR_PEER_STATE_CONNECTED;
+    const bool upgrade = ctx->found && !ctx->found_connected &&
+                         peer && peer->state == FPR_PEER_STATE_CONNECTED;
+    if (usable && (!ctx->found || upgrade)) {
         memcpy(ctx->mac, peer->peer_info.peer_addr, MAC_ADDRESS_LENGTH);
         if (ctx->name_size > 0) {
             // copy up to caller-provided size (reserve space for NUL)
@@ -321,6 +325,7 @@ void _find_host_callback(void *key, void *value, void *user_data)
             ctx->name[0] = '\0';
         }
         ctx->found = true;
+        ctx->found_connected = (peer->state == FPR_PEER_STATE_CONNECTED);
     }
 }
 
@@ -449,8 +454,7 @@ esp_err_t fpr_client_disconnect(void)
     if (err == ESP_OK) {
         FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(host_mac);
         if (peer) {
-            peer->is_connected = false;
-            peer->state = FPR_PEER_STATE_DISCOVERED;
+            _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
             ESP_LOGI(TAG, "Disconnected from host: %s", peer->name);
             return ESP_OK;
         }
@@ -514,8 +518,7 @@ void _fpr_client_reconnect_task(void *arg)
                 uint32_t timeout_ms = _fpr_get_power_adjusted_interval(FPR_RECONNECT_TIMEOUT_MS);
                 if ((uint64_t)US_TO_MS(age_us) > timeout_ms) {
                     ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)US_TO_MS(age_us));
-                    host_peer->is_connected = false;
-                    host_peer->state = FPR_PEER_STATE_DISCOVERED;
+                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
             }
         }

@@ -173,7 +173,8 @@ fpr_mode_type_t fpr_network_get_mode();
 /**
  * @brief Add a new peer to the network.
  * @param peer_mac MAC address of the new peer.
- * @return ESP_OK on success, error code otherwise.
+ * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the MAC already
+ *         exists (the existing peer is unchanged), error code otherwise.
  */
 esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
 
@@ -316,6 +317,10 @@ size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data);
 /**
  * @brief Register callback for receiving application data.
  * @param callback Function to call when data is received (NULL to unregister).
+ * @note Runs after the nonblocking queue update; no peer-store access
+ *       follows the callback in the data receive path. The callback may
+ *       remove its peer or clear peers. This is not a cross-task safety
+ *       guarantee. Borrowed data/MAC/length pointers are callback-scoped.
  */
 void fpr_register_receive_callback(fpr_data_receive_cb_t callback);
 

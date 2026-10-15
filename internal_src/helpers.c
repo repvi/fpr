@@ -11,11 +11,15 @@
 
 #include "fpr/internal/helpers.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 static const char *TAG = "fpr_helpers";
 
-static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, uint8_t *peer_address) 
+/* Returns true when the packet should be enqueued/callbacked, false when
+ * the queue-mode policy dropped it. Callers must honor the return: the
+ * drops counted here previously still reached the queue. */
+static bool _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, uint8_t *peer_address) 
 {
     // Determine packet type characteristics
     bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);
@@ -43,7 +47,7 @@ static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
             // Reset any partial fragment state
             store->receiving_fragmented = false;
             store->fragment_seq_num = 0;
-            return;
+            return false;
         }
 
         // Single packet in latest-only mode - drain queue before adding
@@ -93,7 +97,7 @@ static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
                          (unsigned long)data->sequence_num);
                 #endif
                 fpr_net.stats.packets_dropped++;
-                return;
+                return false;
             }
             if (is_fragment_end) {
                 // Fragment sequence complete
@@ -102,6 +106,7 @@ static void _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
             }
         }
     }
+    return true;
 }
 
 void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data) 
@@ -113,48 +118,51 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
         _update_peer_rssi_and_timestamp(store, esp_now_info);
         
-        // Replay protection: check sequence number
-        // Allow sequence 0 (for legacy/handshake packets)
-        // Allow same sequence (for multi-packet fragments)
-        // Block packets with OLDER sequence numbers (replay attacks)
-        if (data->sequence_num != 0 && data->sequence_num < store->last_seq_num) {
-            // Potential replay attack - drop packet with old sequence
-            fpr_net.stats.replay_attacks_blocked++;
-            #if (FPR_DEBUG == 1)
-            ESP_LOGW(TAG, "Replay attack blocked from " MACSTR " (seq %lu < last %lu)",
-                     MAC2STR(peer_address), (unsigned long)data->sequence_num, 
-                     (unsigned long)store->last_seq_num);
-            #endif
-            return;
-        }
-        
-        // Update last seen sequence number (only if newer)
-        if (data->sequence_num > store->last_seq_num) {
-            store->last_seq_num = data->sequence_num;
+        // Replay protection: wrap-aware sequence check.
+        // - seq 0 is always allowed (legacy/handshake packets)
+        // - a "newer" sequence (within half the space, so a forged
+        //   UINT32_MAX cannot pin the watermark forever) is accepted
+        // - an equal sequence is only a retransmitted fragment of the
+        //   in-progress multi-packet message; equal-seq singles are replays
+        if (data->sequence_num != 0) {
+            int32_t seq_diff = (int32_t)(data->sequence_num - store->last_seq_num);
+            bool is_newer = (seq_diff > 0);
+            bool is_fragment_resend = (seq_diff == 0) && store->receiving_fragmented;
+            if (!is_newer && !is_fragment_resend) {
+                // Potential replay attack - drop packet with old sequence
+                fpr_net.stats.replay_attacks_blocked++;
+                #if (FPR_DEBUG == 1)
+                ESP_LOGW(TAG, "Replay attack blocked from " MACSTR " (seq %lu, last %lu)",
+                         MAC2STR(peer_address), (unsigned long)data->sequence_num,
+                         (unsigned long)store->last_seq_num);
+                #endif
+                return;
+            }
+
+            if (is_newer) {
+                store->last_seq_num = data->sequence_num;
+            }
         }
         
         store->packets_received++;
 
-        // Check if this is a control packet
+        // Control/handshake packets (id == -1) are consumed by the receive
+        // handlers themselves; they carry key material and must never reach
+        // the application queue or the data callback.
         bool is_control_packet = (data->id == FPR_PACKET_ID_CONTROL);
-        
-        // Determine if this is a complete packet
-        bool is_complete_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE || 
-                                   data->package_type == FPR_PACKAGE_TYPE_END);
-        
-        // Handle queue mode logic (but skip for control packets - they always go through)
-        if (!is_control_packet) {
-            _store_data_with_mode(store, data, peer_address);
-        }
-        
-        // Call application callback if registered (do this before queue send to avoid blocking delays)
-        if (fpr_net.data_callback) {
-            fpr_package_t *package = (fpr_package_t *)data;
-            // Pass the protocol payload size to the application callback
-            int data_len = (int)sizeof(package->protocol);
-            fpr_net.data_callback(peer_address, &package->protocol, &data_len);
+        if (is_control_packet) {
+            return;
         }
 
+        // Determine if this is a complete packet
+        bool is_complete_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE ||
+                                   data->package_type == FPR_PACKAGE_TYPE_END);
+
+        // Queue-mode policy may drop the packet (counted already).
+        if (!_store_data_with_mode(store, data, peer_address)) {
+            return;
+        }
+        
         // Store in queue (non-blocking) - do not block the receiver on queue availability
         if (xQueueSend(store->response_queue, (void*)data, 0) == pdPASS) {
             // Increment queued packet count only for complete packets
@@ -168,12 +176,26 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
             ESP_LOGW(TAG, "Queue full, packet dropped from " MACSTR, MAC2STR(peer_address));
             #endif
         }
+
+        /* Finish every store/queue access before invoking application
+         * code: a callback may remove this peer or clear the peer map. */
+        if (fpr_net.data_callback) {
+            fpr_package_t *package = (fpr_package_t *)data;
+            const size_t cap = sizeof(package->protocol);
+            int data_len = (int)((data->payload_size > 0 && data->payload_size <= cap)
+                                 ? data->payload_size : cap);
+            fpr_net.data_callback(peer_address, &package->protocol, &data_len);
+        }
     }
 }
 
 esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    /* hashmap_put replaces values but keeps the original key pointer.
+     * Replacing an owned store would leak it and its response queue. */
+    ESP_RETURN_ON_FALSE(_get_peer_from_map(peer_mac) == NULL,
+                        ESP_ERR_INVALID_STATE, TAG, "Peer already exists");
     
     FPR_STORE_HASH_TYPE *store = (FPR_STORE_HASH_TYPE *)heap_caps_calloc(1, sizeof(FPR_STORE_HASH_TYPE), MALLOC_CAP_DEFAULT);
     ESP_RETURN_ON_FALSE(store != NULL, ESP_ERR_NO_MEM, TAG, "Failed to allocate peer store");
@@ -181,6 +203,7 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
     _safe_string_copy(store->name, name ? name : "Unnamed", sizeof(store->name));
     store->response_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
     if (!store->response_queue) {
+        fpr_security_clear_keys(&store->security);
         heap_caps_free(store);
         return ESP_ERR_NO_MEM;
     }
@@ -214,6 +237,7 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
         if (err != ESP_OK) {
             hashmap_remove(&fpr_net.peers_map, store->peer_info.peer_addr);
             vQueueDelete(store->response_queue);
+            fpr_security_clear_keys(&store->security);
             heap_caps_free(store);
             return err;
         }
@@ -221,6 +245,7 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
     }
     else {
         vQueueDelete(store->response_queue);
+        fpr_security_clear_keys(&store->security);
         heap_caps_free(store);
         return ESP_FAIL;
     }

@@ -38,59 +38,38 @@
 //   fpr_set_extender_mode();  // Enable routing/forwarding
 //
 
-typedef struct {
-    fpr_package_type_t package_type;
-    fpr_package_id_t package_id;
-    uint8_t max_hops;
-} fpr_send_options_full_control_t;
-
-
 static const char *TAG = "fpr_extender";
 
-static bool _should_forward_packet(fpr_package_t *package, const uint8_t *src_mac)
+static bool _should_forward_packet(const fpr_package_t *package)
 {
     // Don't forward if we're the origin
     if (memcmp(package->origin_mac, fpr_net.mac, 6) == 0) {
         return false;
     }
-    
+
     // Check TTL (hop count limit)
     if (package->hop_count >= package->max_hops) {
         ESP_LOGW(TAG, "Packet exceeded max hops (%d), dropping", package->max_hops);
         return false;
     }
-    
+
     // Check if destination is broadcast or someone else
     const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
     bool is_broadcast_dest = (memcmp(package->dest_mac, broadcast_mac, 6) == 0);
     bool is_for_me = (memcmp(package->dest_mac, fpr_net.mac, 6) == 0);
-    
+
     // Forward if broadcast or not for me
     return (is_broadcast_dest || !is_for_me);
 }
 
-static esp_err_t fpr_send_data_full_control(uint8_t *peer_address, void *data, int size, const fpr_send_options_full_control_t *options)
+/* Forward the received package itself: origin/dest/sequence/version and
+ * payload_size all survive, only hop_count advances. Rebuilding the
+ * packet used to reset hop_count to 0 (TTL never expired), rewrite
+ * origin to the extender and dest to the next hop — breaking route
+ * learning, replay protection and TTL termination downstream. */
+static esp_err_t _forward_package(const uint8_t *next_hop, const fpr_package_t *package)
 {
-    ESP_RETURN_ON_FALSE(data != NULL && size > 0, ESP_ERR_INVALID_ARG, TAG, "Invalid data or size");
-    ESP_RETURN_ON_FALSE(options != NULL, ESP_ERR_INVALID_ARG, TAG, "Options cannot be NULL");
-    ESP_RETURN_ON_FALSE(size <= sizeof(((fpr_package_t*)0)->protocol), ESP_ERR_INVALID_SIZE, TAG, "Data too large for packet");
-    
-    fpr_package_t package = {0};
-    package.package_type = options->package_type;
-    package.id = options->package_id;
-    memcpy(&package.protocol, data, size);
-    
-    // Initialize routing fields
-    memcpy(package.origin_mac, fpr_net.mac, 6);
-    if (peer_address) {
-        memcpy(package.dest_mac, peer_address, 6);
-    } else {
-        memset(package.dest_mac, 0xFF, 6);
-    }
-    package.hop_count = 0;
-    package.max_hops = options->max_hops > 0 ? options->max_hops : FPR_DEFAULT_MAX_HOPS;
-    
-    esp_err_t result = esp_now_send(peer_address, (const uint8_t *)&package, sizeof(package));
+    esp_err_t result = esp_now_send(next_hop, (const uint8_t *)package, sizeof(*package));
     if (result == ESP_OK) {
         fpr_net.stats.packets_sent++;
     } else {
@@ -162,21 +141,25 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
         // Process locally (store in queue if peer exists)
         if (peer && peer->response_queue) {
             // Non-blocking enqueue to avoid delaying RX path
-            xQueueSend(peer->response_queue, data, 0);
+            if (xQueueSend(peer->response_queue, data, 0) == pdPASS &&
+                (package->package_type == FPR_PACKAGE_TYPE_SINGLE ||
+                 package->package_type == FPR_PACKAGE_TYPE_END)) {
+                peer->queued_packets++;
+            }
         }
         ESP_LOGI(TAG, "Extender received packet from " MACSTR " (hops: %d)", 
                  MAC2STR(package->origin_mac), package->hop_count);
     }
     
     // Forward packet if routing enabled and appropriate
-    if (fpr_net.routing_enabled && _should_forward_packet(package, esp_now_info->src_addr)) {
-        package->hop_count++;  // Increment hop count
-        
+    if (fpr_net.routing_enabled && _should_forward_packet(package)) {
+        package->hop_count++;  // Increment hop count on our local copy
+
         // Determine next hop
-        uint8_t *next_hop = NULL;
+        const uint8_t *next_hop = NULL;
         if (is_broadcast) {
-            // Broadcast to all except sender
-            next_hop = (uint8_t *)broadcast_mac;
+            // Flood: downstream nodes re-derive broadcast from dest_mac
+            next_hop = broadcast_mac;
         } else {
             // Look up route to destination
             FPR_STORE_HASH_TYPE *dest_peer = _get_peer_from_map(package->dest_mac);
@@ -184,21 +167,15 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
                 next_hop = dest_peer->next_hop_mac;
             }
         }
-        
+
         if (next_hop) {
-            fpr_send_options_full_control_t options = {
-                .package_type = package->package_type,
-                .package_id = package->id,
-                .max_hops = package->max_hops
-            };
-            esp_err_t err = fpr_send_data_full_control(next_hop, (void *)&package->protocol, sizeof(package->protocol), &options);
+            esp_err_t err = _forward_package(next_hop, package);
             if (err == ESP_OK) {
                 fpr_net.stats.packets_forwarded++;
                 ESP_LOGD(TAG, "Forwarded packet from " MACSTR " to " MACSTR " (hop %d/%d)",
-                         MAC2STR(package->origin_mac), MAC2STR(next_hop), 
+                         MAC2STR(package->origin_mac), MAC2STR(next_hop),
                          package->hop_count, package->max_hops);
             } else {
-                fpr_net.stats.send_failures++;
                 ESP_LOGW(TAG, "Failed to forward packet: %s", esp_err_to_name(err));
             }
         } else {

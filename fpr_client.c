@@ -520,6 +520,20 @@ void _fpr_client_reconnect_task(void *arg)
                     ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)US_TO_MS(age_us));
                     _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
+            } else if (host_peer && !host_peer->is_connected &&
+                       host_peer->sec_state > FPR_SEC_STATE_NONE &&
+                       host_peer->sec_state < FPR_SEC_STATE_ESTABLISHED) {
+                // Handshake stalled (e.g. the host's ACK was lost). Nothing
+                // else times these states out; clear them so the next host
+                // broadcast can restart the handshake instead of us sitting
+                // in LWK_SENT forever.
+                int64_t age_us = esp_timer_get_time() - host_peer->last_seen;
+                uint32_t timeout_ms = _fpr_get_power_adjusted_interval(FPR_RECONNECT_TIMEOUT_MS);
+                if ((uint64_t)US_TO_MS(age_us) > timeout_ms) {
+                    ESP_LOGW(TAG, "Handshake with host stalled in state %d - resetting",
+                             host_peer->sec_state);
+                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
+                }
             }
         }
 

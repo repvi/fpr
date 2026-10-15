@@ -853,6 +853,12 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
     
                 case FPR_PACKAGE_TYPE_END:
                     if (!expecting_more) {
+                        // Orphaned END was counted as a complete packet when
+                        // queued; dropping it here must decrement too or
+                        // queued_packets desyncs from the real queue.
+                        if (peer->queued_packets > 0) {
+                            peer->queued_packets--;
+                        }
                         continue; // out of order, skip
                     }
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);

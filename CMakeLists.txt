@@ -11,12 +11,16 @@ set(FPR_SOURCES
     "fpr.c"
 
     "internal_src/helpers.c"
-
-    # Test helpers (built into fpr component so main can call them)
-    "test/test_fpr_host.c"
-    "test/test_fpr_client.c"
-    "test/test_fpr_extender.c"
 )
+
+if(CONFIG_FPR_TEST_MODE)
+    # Test helpers (built into fpr component so main can call them)
+    list(APPEND FPR_SOURCES
+        "test/test_fpr_host.c"
+        "test/test_fpr_client.c"
+        "test/test_fpr_extender.c"
+    )
+endif()
 
 if(CONFIG_FPR_TEST_DATA_SIZES)
     list(APPEND FPR_SOURCES "test/test_fpr_data_sizes.c")

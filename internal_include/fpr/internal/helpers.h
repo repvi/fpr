@@ -16,6 +16,7 @@
 
 #include "fpr/internal/private_defs.h"
 #include "esp_timer.h"
+#include "esp_heap_caps.h"
 
 // Helper: Safe string copy with NUL termination
 static inline void _safe_string_copy(char *dest, const char *src, size_t dest_size)
@@ -83,6 +84,84 @@ static inline void fpr_set_peer_info(esp_now_peer_info_t *gen_info)
     gen_info->channel = 0; // Use current channel
     gen_info->encrypt = false; // No encryption
     gen_info->ifidx = WIFI_IF_STA;
+}
+
+/* Serialize access to fpr_net.peers_map and the peer stores it owns.
+ * ESP-NOW RX callbacks (WiFi task), the loop/reconnect tasks and
+ * application calls all reach the map; without this a concurrent remove
+ * can free a store another context is using. The lock is recursive so
+ * callbacks invoked while a caller holds it (data_callback calling
+ * fpr_network_remove_peer, request_cb calling fpr_host_approve_peer)
+ * re-enter safely on the same task. */
+static inline void _peers_lock(void)
+{
+    if (fpr_net.peers_lock != NULL) {
+        xSemaphoreTakeRecursive(fpr_net.peers_lock, portMAX_DELAY);
+    }
+}
+
+static inline void _peers_unlock(void)
+{
+    if (fpr_net.peers_lock != NULL) {
+        xSemaphoreGiveRecursive(fpr_net.peers_lock);
+    }
+}
+
+/* Free-or-defer for a store already detached (or being detached) from
+ * the map: a blocking reader may hold a reference, in which case the
+ * store becomes `dead` and is freed by _peer_store_release(). Call only
+ * under _peers_lock(). Replaces every bare vQueueDelete+clear_keys+free
+ * sequence so no free site can outrun a live reader. */
+static inline void _peer_store_free_or_defer(FPR_STORE_HASH_TYPE *peer)
+{
+    if (!peer) {
+        return;
+    }
+    if (peer->refcount > 0) {
+        peer->dead = true;
+        return;
+    }
+    if (peer->response_queue != NULL) {
+        vQueueDelete(peer->response_queue);
+    }
+    fpr_security_clear_keys(&peer->security);
+    heap_caps_free(peer);
+}
+
+/* Acquire a temporary reference on the store for `mac`. The reference
+ * keeps the store (and its response queue) alive after _peers_unlock(),
+ * so a caller may block on the queue without holding the peers lock —
+ * holding it would starve the RX path that fills the queue. Pair every
+ * acquire with _peer_store_release(). */
+static inline FPR_STORE_HASH_TYPE *_peer_store_acquire(const uint8_t *mac)
+{
+    if (!mac) {
+        return NULL;
+    }
+    _peers_lock();
+    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map((uint8_t *)mac);
+    if (peer) {
+        peer->refcount++;
+    }
+    _peers_unlock();
+    return peer;
+}
+
+static inline void _peer_store_release(FPR_STORE_HASH_TYPE *peer)
+{
+    if (!peer) {
+        return;
+    }
+    _peers_lock();
+    bool free_now = (--peer->refcount == 0 && peer->dead);
+    _peers_unlock();
+    if (free_now) {
+        if (peer->response_queue != NULL) {
+            vQueueDelete(peer->response_queue);
+        }
+        fpr_security_clear_keys(&peer->security);
+        heap_caps_free(peer);
+    }
 }
 
 /* Reset a peer to "known but not connected". Stale handshake state must

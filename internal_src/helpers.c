@@ -109,10 +109,14 @@ static bool _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
     return true;
 }
 
-void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data) 
+void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data)
 {
     fpr_net.stats.packets_received++;
     uint8_t *peer_address = (uint8_t *)esp_now_info->src_addr;
+    /* Recursive: callers in the RX path already hold peers_lock, and the
+     * data_callback below may call fpr_network_remove_peer() which takes
+     * it again on this same task. */
+    _peers_lock();
     FPR_STORE_HASH_TYPE *store = _get_peer_from_map(peer_address);
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
@@ -136,6 +140,7 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
                          MAC2STR(peer_address), (unsigned long)data->sequence_num,
                          (unsigned long)store->last_seq_num);
                 #endif
+                _peers_unlock();
                 return;
             }
 
@@ -143,7 +148,7 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
                 store->last_seq_num = data->sequence_num;
             }
         }
-        
+
         store->packets_received++;
 
         // Control/handshake packets (id == -1) are consumed by the receive
@@ -151,6 +156,7 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
         // the application queue or the data callback.
         bool is_control_packet = (data->id == FPR_PACKET_ID_CONTROL);
         if (is_control_packet) {
+            _peers_unlock();
             return;
         }
 
@@ -160,6 +166,7 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
 
         // Queue-mode policy may drop the packet (counted already).
         if (!_store_data_with_mode(store, data, peer_address)) {
+            _peers_unlock();
             return;
         }
         
@@ -187,24 +194,32 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
             fpr_net.data_callback(peer_address, &package->protocol, &data_len);
         }
     }
+    _peers_unlock();
 }
 
 esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    _peers_lock();
     /* hashmap_put replaces values but keeps the original key pointer.
      * Replacing an owned store would leak it and its response queue. */
-    ESP_RETURN_ON_FALSE(_get_peer_from_map(peer_mac) == NULL,
-                        ESP_ERR_INVALID_STATE, TAG, "Peer already exists");
-    
+    if (_get_peer_from_map(peer_mac) != NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer already exists");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     FPR_STORE_HASH_TYPE *store = (FPR_STORE_HASH_TYPE *)heap_caps_calloc(1, sizeof(FPR_STORE_HASH_TYPE), MALLOC_CAP_DEFAULT);
-    ESP_RETURN_ON_FALSE(store != NULL, ESP_ERR_NO_MEM, TAG, "Failed to allocate peer store");
+    if (!store) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Failed to allocate peer store");
+        return ESP_ERR_NO_MEM;
+    }
     
     _safe_string_copy(store->name, name ? name : "Unnamed", sizeof(store->name));
     store->response_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
     if (!store->response_queue) {
-        fpr_security_clear_keys(&store->security);
-        heap_caps_free(store);
+        _peer_store_free_or_defer(store);
         return ESP_ERR_NO_MEM;
     }
     
@@ -236,17 +251,16 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
         esp_err_t err = esp_now_add_peer(&store->peer_info);
         if (err != ESP_OK) {
             hashmap_remove(&fpr_net.peers_map, store->peer_info.peer_addr);
-            vQueueDelete(store->response_queue);
-            fpr_security_clear_keys(&store->security);
-            heap_caps_free(store);
+            _peer_store_free_or_defer(store);
+            _peers_unlock();
             return err;
         }
+        _peers_unlock();
         return ESP_OK;
     }
     else {
-        vQueueDelete(store->response_queue);
-        fpr_security_clear_keys(&store->security);
-        heap_caps_free(store);
+        _peer_store_free_or_defer(store);
+        _peers_unlock();
         return ESP_FAIL;
     }
 }

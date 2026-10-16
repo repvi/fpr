@@ -33,8 +33,10 @@ static void _count_connected_callback(void *key, void *value, void *user_data)
 
 size_t fpr_host_get_connected_count()
 {
+    _peers_lock();
     size_t count = 0;
     hashmap_foreach(&fpr_net.peers_map, _count_connected_callback, &count);
+    _peers_unlock();
     return count;
 }
 
@@ -140,32 +142,40 @@ static void _handle_host_auto_mode(const esp_now_recv_info_t *esp_now_info, cons
 esp_err_t fpr_host_approve_peer(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Peer not found");
-    
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+
     if (peer->state == FPR_PEER_STATE_BLOCKED) {
+        _peers_unlock();
         ESP_LOGW(TAG, "Cannot approve blocked peer " MACSTR, MAC2STR(peer_mac));
         return ESP_ERR_INVALID_STATE;
     }
-    
+
     // Check max peers limit
     if (fpr_net.host_config.max_peers > 0) {
         size_t connected_count = fpr_host_get_connected_count();
         if (connected_count >= fpr_net.host_config.max_peers && peer->state != FPR_PEER_STATE_CONNECTED) {
+            _peers_unlock();
             ESP_LOGW(TAG, "Max peers limit reached - cannot approve");
             return ESP_ERR_NO_MEM;
         }
     }
-    
+
     ESP_LOGI(TAG, "Peer approved: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
-    
+
     // Initiate security handshake by sending PWK
     esp_err_t err;
     if (fpr_net.host_pwk_valid) {
         // Send PWK to start handshake
         err = fpr_sec_host_send_pwk(peer_mac, peer, fpr_net.host_pwk);
         if (err != ESP_OK) {
+            _peers_unlock();
             ESP_LOGE(TAG, "Failed to send PWK to approved peer: %s", esp_err_to_name(err));
             return err;
         }
@@ -179,19 +189,26 @@ esp_err_t fpr_host_approve_peer(uint8_t *peer_mac)
             ESP_LOGE(TAG, "Failed to send approval to peer: %s", esp_err_to_name(err));
         }
     }
-    
+
+    _peers_unlock();
     return err;
 }
 
 esp_err_t fpr_host_reject_peer(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Peer not found");
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer not found");
+        return ESP_ERR_NOT_FOUND;
+    }
 
     _reset_peer_connection(peer, FPR_PEER_STATE_REJECTED);
     ESP_LOGI(TAG, "Peer rejected: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
+    _peers_unlock();
 
     return ESP_OK;
 }
@@ -291,6 +308,10 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
 
     // Handle unicast messages from clients (connection requests)
     if (!is_broadcast) {
+        /* Serialize the whole get/use/handshake region — peer stores are
+         * freed by remove/clear on other tasks. Recursive lock: request_cb
+         * below may call fpr_host_approve_peer on this same task. */
+        _peers_lock();
         FPR_STORE_HASH_TYPE *existing = _get_peer_from_map(esp_now_info->src_addr);
 
         // Only treat as connection request if:
@@ -308,6 +329,7 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
             }
 
             if (!_allow_peer_to_connect(esp_now_info, info, existing)) {
+                _peers_unlock();
                 ESP_LOGW(TAG, "Connection from %s denied", info->name);
                 return;
             }
@@ -332,23 +354,26 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
         else {
             // Data packet from unknown/disconnected peer - drop it
             #if (FPR_DEBUG == 1)
-            ESP_LOGW(TAG, "Dropping data packet (id: %d) from unknown/disconnected peer " MACSTR, 
+            ESP_LOGW(TAG, "Dropping data packet (id: %d) from unknown/disconnected peer " MACSTR,
                      package->id, MAC2STR(esp_now_info->src_addr));
             #endif
         }
+        _peers_unlock();
     }
 }
 
 esp_err_t fpr_host_block_peer(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    
+
     if (peer) {
         peer->is_connected = false;
         peer->state = FPR_PEER_STATE_BLOCKED;
         ESP_LOGI(TAG, "Peer blocked: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
+        _peers_unlock();
     } else {
         // Add as blocked even if not in map yet
         esp_err_t err = _add_peer_internal(peer_mac, "Blocked", false, 0);
@@ -359,37 +384,51 @@ esp_err_t fpr_host_block_peer(uint8_t *peer_mac)
                 ESP_LOGI(TAG, "Peer blocked: " MACSTR, MAC2STR(peer_mac));
             }
         }
+        _peers_unlock();
         return err;
     }
-    
+
     return ESP_OK;
 }
 
 esp_err_t fpr_host_unblock_peer(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Peer not found");
-    
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+
     if (peer->state == FPR_PEER_STATE_BLOCKED) {
         peer->state = FPR_PEER_STATE_DISCOVERED;
         ESP_LOGI(TAG, "Peer unblocked: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
+        _peers_unlock();
         return ESP_OK;
     }
-    
+    _peers_unlock();
+
     return ESP_ERR_INVALID_STATE;
 }
 
 esp_err_t fpr_host_disconnect_peer(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Peer not found");
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer not found");
+        return ESP_ERR_NOT_FOUND;
+    }
 
     _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
     ESP_LOGI(TAG, "Peer disconnected: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
+    _peers_unlock();
 
     return ESP_OK;
 }
@@ -430,7 +469,9 @@ void _fpr_host_reconnect_task(void *arg)
         
         // Periodically run keepalive + reconnect checks for connected clients
         if ((xTaskGetTickCount() - last_keep) >= keep_interval_ticks) {
+            _peers_lock();
             hashmap_foreach(&fpr_net.peers_map, _host_reconnect_and_keepalive_cb, NULL);
+            _peers_unlock();
             last_keep = xTaskGetTickCount();
         }
 

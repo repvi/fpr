@@ -24,6 +24,7 @@
 #include "lib/base_macros.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "esp_now.h"
 #include "esp_mac.h"
 #include <string.h>
@@ -68,12 +69,27 @@ typedef struct {
     fpr_queue_mode_t queue_mode; // Queue mode for this peer (defaults to global setting)
     bool receiving_fragmented;   // True if currently receiving a multi-fragment message
     uint32_t fragment_seq_num;   // Sequence number of the fragmented message being received
+    unsigned refcount;           // Blocking readers (e.g. get_data_from_peer) hold
+                                 // the store alive across _peers_unlock()
+    bool dead;                   // Removed from map while refcounted; freed at
+                                 // last release
 } fpr_store_hash_t;
 
 #define FPR_STORE_HASH_TYPE fpr_store_hash_t
 
 #define FPR_BROADCAST_ADDRESS {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 #define FPR_QUEUE_LENGTH 20 // for enough data for incoming packets
+
+/* Extender routing: a route is keyed by FINAL destination MAC (the
+ * packet's origin/dest fields), not by the immediate sender — the peer
+ * table answers "who did I hear", the route table answers "who do I
+ * send to in order to reach X". */
+typedef struct {
+    uint8_t dest_mac[MAC_ADDRESS_LENGTH];      // route key (owned copy)
+    uint8_t next_hop_mac[MAC_ADDRESS_LENGTH];  // direct neighbor to send to
+    uint8_t hop_count;                         // distance to destination
+    int64_t last_seen;                         // last route refresh (us)
+} fpr_route_entry_t;
 
 #define FPR_PROTOCOL_DATA_INT_SIZE 45
 
@@ -105,6 +121,12 @@ _Static_assert(ESP_NOW_MAX_DATA_LEN > sizeof(fpr_package_t), "ESP_NOW_MAX_DATA_L
 
 typedef struct {
     HashMap peers_map;
+    /* Recursive mutex serializing peers_map and the peer stores it owns.
+     * Recursive because RX-path callbacks (data_callback, request_cb)
+     * legitimately re-enter peer APIs (remove/approve) on the same task
+     * while the map lock is held. */
+    SemaphoreHandle_t peers_lock;
+    HashMap routes_map;            // Extender routes keyed by dest MAC
     char name[PEER_NAME_MAX_LENGTH];
     uint8_t mac[MAC_ADDRESS_LENGTH];
     fpr_visibility_t access_state;

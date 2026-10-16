@@ -49,11 +49,13 @@ static void _check_connected_callback(void *key, void *value, void *user_data)
 
 bool fpr_client_is_connected()
 {
+    _peers_lock();
     bool connected = false;
     size_t count = hashmap_size(&fpr_net.peers_map);
     if (count > 0) {
         hashmap_foreach(&fpr_net.peers_map, _check_connected_callback, &connected);
     }
+    _peers_unlock();
     return connected;
 }
 
@@ -165,6 +167,10 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
     bool is_broadcast = is_address_broadcast(esp_now_info->des_addr);
     
     // Handle broadcast discovery messages from host (always control packets)
+    /* Serialize the whole peer-map region (get/add/handshake/data store)
+     * against remove/clear on other tasks. Recursive: discovery_cb and
+     * data_callback below may re-enter peer APIs on this same task. */
+    _peers_lock();
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
         FPR_STORE_HASH_TYPE *known_host = _get_peer_from_map(esp_now_info->src_addr);
@@ -198,7 +204,8 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                     } else {
                         // Manual mode: consult selection_cb if present; if NULL, do not auto-reconnect
                         if (fpr_net.client_config.selection_cb) {
-                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+                            int8_t rssi = esp_now_info->rx_ctrl ? esp_now_info->rx_ctrl->rssi : 0;
+                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, rssi);
                             if (should_connect) {
                                 esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
                                 if (err == ESP_OK) {
@@ -269,6 +276,7 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
                         #if (FPR_DEBUG == 1)
                         ESP_LOGD(TAG, "Received ACK while already established - likely retransmit, ignoring");
                         #endif
+                        _peers_unlock();
                         return; // Already connected, ignore duplicate ACK
                     }
                     
@@ -296,6 +304,7 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
             }
         }
     }
+    _peers_unlock();
 }
 
 void _find_host_callback(void *key, void *value, void *user_data)
@@ -338,7 +347,9 @@ esp_err_t fpr_client_get_host_info(uint8_t *mac_out, char *name_out, size_t name
         .found = false
     };
 
+    _peers_lock();
     hashmap_foreach(&fpr_net.peers_map, _find_host_callback, &ctx);
+    _peers_unlock();
 
     if (!ctx.found) {
         return ESP_ERR_NOT_FOUND;
@@ -403,42 +414,54 @@ size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_
         .count = 0,
         .connected_only = false  // List all discovered hosts
     };
-    
+
+    _peers_lock();
     hashmap_foreach(&fpr_net.peers_map, _filter_peers_callback, &ctx);
+    _peers_unlock();
     return ctx.count;
 }
 
 esp_err_t fpr_client_connect_to_host(uint8_t *peer_mac, TickType_t timeout)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Host not found - scan first");
-    
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Host not found - scan first");
+        return ESP_ERR_NOT_FOUND;
+    }
+
     if (peer->state == FPR_PEER_STATE_CONNECTED) {
         ESP_LOGI(TAG, "Already connected to %s", peer->name);
+        _peers_unlock();
         return ESP_OK;
     }
-    
     ESP_LOGI(TAG, "Connecting to host: %s (" MACSTR ")", peer->name, MAC2STR(peer_mac));
-    
+    _peers_unlock();
+
     // Send direct connection request to this specific host
     TickType_t start = xTaskGetTickCount();
     const TickType_t retry_interval = pdMS_TO_TICKS(FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS);
-    
+
     while (xTaskGetTickCount() - start < timeout) {
         esp_err_t err = fpr_network_send_device_info(peer_mac);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send connection request: %s", esp_err_to_name(err));
         }
-        
-        // Check if connected
+
+        // Check if connected — re-lookup under the lock each iteration;
+        // the store can be freed by a concurrent remove between rounds.
+        _peers_lock();
         peer = _get_peer_from_map(peer_mac);
-        if (peer && peer->state == FPR_PEER_STATE_CONNECTED) {
-            ESP_LOGI(TAG, "Successfully connected to %s", peer->name);
+        bool connected = (peer && peer->state == FPR_PEER_STATE_CONNECTED);
+        _peers_unlock();
+        if (connected) {
+            ESP_LOGI(TAG, "Successfully connected to host " MACSTR, MAC2STR(peer_mac));
             return ESP_OK;
         }
-        
+
         vTaskDelay(retry_interval);
     }
     
@@ -452,22 +475,27 @@ esp_err_t fpr_client_disconnect(void)
     uint8_t host_mac[6];
     esp_err_t err = fpr_client_get_host_info(host_mac, NULL, 0);
     if (err == ESP_OK) {
+        _peers_lock();
         FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(host_mac);
         if (peer) {
             _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
             ESP_LOGI(TAG, "Disconnected from host: %s", peer->name);
+            _peers_unlock();
             return ESP_OK;
         }
+        _peers_unlock();
     }
-    
+
     return ESP_ERR_NOT_FOUND;
 }
 
 size_t fpr_client_scan_for_hosts(TickType_t duration)
 {
     ESP_LOGI(TAG, "Scanning for hosts for %lu ms", (unsigned long)pdTICKS_TO_MS(duration));
-    
+
+    _peers_lock();
     size_t initial_count = hashmap_size(&fpr_net.peers_map);
+    _peers_unlock();
     TickType_t start = xTaskGetTickCount();
     const TickType_t broadcast_interval = pdMS_TO_TICKS(FPR_HOST_SCAN_BROADCAST_INTERVAL_MS);
     TickType_t last_broadcast = 0;
@@ -482,7 +510,9 @@ size_t fpr_client_scan_for_hosts(TickType_t duration)
         vTaskDelay(pdMS_TO_TICKS(FPR_HOST_SCAN_POLL_INTERVAL_MS));
     }
     
+    _peers_lock();
     size_t final_count = hashmap_size(&fpr_net.peers_map);
+    _peers_unlock();
     size_t discovered = final_count > initial_count ? final_count - initial_count : 0;
     
     ESP_LOGI(TAG, "Scan complete - discovered %zu new hosts", discovered);
@@ -502,6 +532,7 @@ void _fpr_client_reconnect_task(void *arg)
         // If connected, send periodic keepalive and check for host timeout
         uint8_t host_mac[MAC_ADDRESS_LENGTH];
         if (fpr_client_get_host_info(host_mac, NULL, 0) == ESP_OK) {
+            _peers_lock();
             FPR_STORE_HASH_TYPE *host_peer = _get_peer_from_map(host_mac);
             if (host_peer && host_peer->is_connected) {
                 // keepalive send periodically
@@ -535,6 +566,7 @@ void _fpr_client_reconnect_task(void *arg)
                     _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
             }
+            _peers_unlock();
         }
 
         vTaskDelay(check_interval_ticks);

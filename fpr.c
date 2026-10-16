@@ -71,22 +71,25 @@ static const char *TAG = "fpr";
 
 // ========== INTERNAL FUNCTIONS ==========
 
-static esp_err_t _remove_peer_internal(uint8_t *peer_mac) 
+static esp_err_t _remove_peer_internal(uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    _peers_lock();
     /* The map key may point inside the store we are about to release. */
     uint8_t mac[MAC_ADDRESS_LENGTH];
     memcpy(mac, peer_mac, sizeof(mac));
     FPR_STORE_HASH_TYPE *var = _get_peer_from_map(mac);
+    esp_err_t result;
     if (var != NULL) {
         if (!hashmap_remove(&fpr_net.peers_map, mac)) {
+            _peers_unlock();
             return ESP_FAIL;
         }
-        vQueueDelete(var->response_queue);
-        fpr_security_clear_keys(&var->security);
-        heap_caps_free(var);
+        _peer_store_free_or_defer(var);
     }
-    return esp_now_del_peer(mac);
+    result = esp_now_del_peer(mac);
+    _peers_unlock();
+    return result;
 }
 
 static void _cleanup_peer_entry(void *key, void *value, void *user_data)
@@ -95,18 +98,21 @@ static void _cleanup_peer_entry(void *key, void *value, void *user_data)
     (void)user_data;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     if (peer) {
-        if (peer->response_queue) {
-            vQueueDelete(peer->response_queue);
-        }
         esp_now_del_peer(peer->peer_info.peer_addr);
-        fpr_security_clear_keys(&peer->security);
-        heap_caps_free(peer);
+        _peer_store_free_or_defer(peer);
     }
 }
 
 static void _reset_all_peers(void)
 {
     hashmap_foreach(&fpr_net.peers_map, _cleanup_peer_entry, NULL);
+}
+
+static void _free_route_entry(void *key, void *value, void *user_data)
+{
+    (void)key;
+    (void)user_data;
+    heap_caps_free(value);
 }
 
 // Helper: Setup broadcast peer configuration
@@ -186,15 +192,32 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     // Initialize sequence number counter
     fpr_net.tx_sequence_num = 0;
 
+    fpr_net.peers_lock = xSemaphoreCreateRecursiveMutex();
+    if (fpr_net.peers_lock == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate peers lock");
+        return ESP_ERR_NO_MEM;
+    }
     if (!hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
         ESP_LOGE(TAG, "Failed to allocate peers map");
+        vSemaphoreDelete(fpr_net.peers_lock);
+        fpr_net.peers_lock = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    if (!hashmap_init(&fpr_net.routes_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
+        ESP_LOGE(TAG, "Failed to allocate routes map");
+        hashmap_free(&fpr_net.peers_map);
+        vSemaphoreDelete(fpr_net.peers_lock);
+        fpr_net.peers_lock = NULL;
         return ESP_ERR_NO_MEM;
     }
     esp_err_t esp_now_err = esp_now_init();
     if (esp_now_err != ESP_OK) {
-        /* The map is already allocated — free it or every init retry
-         * on a degraded radio leaks the bucket array. */
+        /* The maps are already allocated — free them or every init retry
+         * on a degraded radio leaks the bucket arrays. */
+        hashmap_free(&fpr_net.routes_map);
         hashmap_free(&fpr_net.peers_map);
+        vSemaphoreDelete(fpr_net.peers_lock);
+        fpr_net.peers_lock = NULL;
         ESP_LOGE(TAG, "Failed to initialize ESP-NOW: %s", esp_err_to_name(esp_now_err));
         return esp_now_err;
     }
@@ -232,9 +255,19 @@ esp_err_t fpr_network_deinit(void)
 
     /* Clean up peers and hashmap BEFORE memset. esp_now_del_peer() in
      * _cleanup_peer_entry now returns NOT_INIT — harmless; ESP-NOW is
-     * already down and the peer entries are being torn down anyway. */
+     * already down and the peer entries are being torn down anyway.
+     * Take the lock so a still-running reader finishes first (tasks are
+     * dead but an in-flight app call may not be). */
+    _peers_lock();
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
+    hashmap_foreach(&fpr_net.routes_map, _free_route_entry, NULL);
+    hashmap_free(&fpr_net.routes_map);
+    _peers_unlock();
+    if (fpr_net.peers_lock != NULL) {
+        vSemaphoreDelete(fpr_net.peers_lock);
+        fpr_net.peers_lock = NULL;
+    }
 
     // Now safe to zero out the entire structure
     memset(&fpr_net, 0, sizeof(fpr_net));
@@ -523,21 +556,25 @@ esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, 
 
     // Validate peer exists and is connected (unless it's a control packet for handshake)
     if (package_id != FPR_PACKET_ID_CONTROL) {
+        _peers_lock();
         FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_address);
         if (peer == NULL) {
+            _peers_unlock();
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Attempting to send to unknown peer " MACSTR, MAC2STR(peer_address));
             #endif
             return ESP_ERR_NOT_FOUND;
         }
         if (!peer->is_connected) {
+            _peers_unlock();
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Attempting to send to disconnected peer %s (" MACSTR ")", peer->name, MAC2STR(peer_address));
             #endif
             return ESP_ERR_INVALID_STATE;
         }
+        _peers_unlock();
     }
-    
+
     return fpr_network_send_helper(peer_address, data, size, package_id);
 }
 
@@ -597,7 +634,10 @@ esp_err_t fpr_network_broadcast_device_info()
 
 int fpr_network_get_peer_count(void)
 {
-    return hashmap_size(&fpr_net.peers_map);
+    _peers_lock();
+    int count = hashmap_size(&fpr_net.peers_map);
+    _peers_unlock();
+    return count;
 }
 
 void fpr_network_set_permission_state(fpr_visibility_t state)
@@ -613,7 +653,10 @@ fpr_visibility_t fpr_network_get_permission_state(void)
 size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data)
 {
     if (callback) {
-        return hashmap_foreach(&fpr_net.peers_map, callback, user_data);
+        _peers_lock();
+        size_t n = hashmap_foreach(&fpr_net.peers_map, callback, user_data);
+        _peers_unlock();
+        return n;
     }
     else {
         return 0;
@@ -660,7 +703,9 @@ void fpr_get_network_stats(fpr_network_stats_t *stats)
         stats->packets_dropped = fpr_net.stats.packets_dropped;
         stats->send_failures = fpr_net.stats.send_failures;
         stats->replay_attacks_blocked = fpr_net.stats.replay_attacks_blocked;
+        _peers_lock();
         stats->peer_count = hashmap_size(&fpr_net.peers_map);
+        _peers_unlock();
     }
 }
 
@@ -676,10 +721,15 @@ esp_err_t fpr_get_peer_info(uint8_t *peer_mac, fpr_peer_info_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    ESP_RETURN_ON_FALSE(peer != NULL, ESP_ERR_NOT_FOUND, TAG, "Peer not found");
-    
+    if (peer == NULL) {
+        _peers_unlock();
+        ESP_LOGE(TAG, "Peer not found");
+        return ESP_ERR_NOT_FOUND;
+    }
     _copy_peer_to_info(peer, info);
+    _peers_unlock();
     return ESP_OK;
 }
 
@@ -712,8 +762,10 @@ size_t fpr_list_all_peers(fpr_peer_info_t *peer_array, size_t max_peers)
         .max_peers = max_peers,
         .count = 0
     };
-    
+
+    _peers_lock();
     hashmap_foreach(&fpr_net.peers_map, _list_peers_callback, &ctx);
+    _peers_unlock();
     return ctx.count;
 }
 
@@ -729,14 +781,33 @@ static void _cleanup_stale_routes_callback(void *key, void *value, void *user_da
     uint8_t *mac = (uint8_t *)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     route_cleanup_ctx_t *ctx = (route_cleanup_ctx_t *)user_data;
-    
+
     if (peer) {
         int64_t age = esp_timer_get_time() - peer->last_seen;
         uint64_t age_ms = (uint64_t)US_TO_MS(age);
         if (age_ms > ctx->stale_timeout_ms) {
-            ESP_LOGI(TAG, "Removing stale route to " MACSTR " (age: %llu ms)", 
+            ESP_LOGI(TAG, "Removing stale route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
             _remove_peer_internal(mac);
+            ctx->removed_count++;
+        }
+    }
+}
+
+static void _cleanup_stale_route_entry(void *key, void *value, void *user_data)
+{
+    uint8_t *mac = (uint8_t *)key;
+    fpr_route_entry_t *route = (fpr_route_entry_t *)value;
+    route_cleanup_ctx_t *ctx = (route_cleanup_ctx_t *)user_data;
+
+    if (route) {
+        int64_t age = esp_timer_get_time() - route->last_seen;
+        uint64_t age_ms = (uint64_t)US_TO_MS(age);
+        if (age_ms > ctx->stale_timeout_ms) {
+            ESP_LOGI(TAG, "Removing stale extender route to " MACSTR " (age: %llu ms)",
+                     MAC2STR(mac), (unsigned long long)age_ms);
+            hashmap_remove(&fpr_net.routes_map, mac);
+            heap_caps_free(route);
             ctx->removed_count++;
         }
     }
@@ -748,9 +819,12 @@ size_t fpr_cleanup_stale_routes(uint32_t timeout_ms)
         .stale_timeout_ms = timeout_ms,
         .removed_count = 0
     };
-    
+
+    _peers_lock();
     hashmap_foreach(&fpr_net.peers_map, _cleanup_stale_routes_callback, &ctx);
-    
+    hashmap_foreach(&fpr_net.routes_map, _cleanup_stale_route_entry, &ctx);
+    _peers_unlock();
+
     if (ctx.removed_count > 0) {
         ESP_LOGI(TAG, "Cleaned up %zu stale routes", ctx.removed_count);
     }
@@ -760,20 +834,23 @@ size_t fpr_cleanup_stale_routes(uint32_t timeout_ms)
 
 void fpr_print_route_table(void)
 {
+    _peers_lock();
     size_t peer_count = hashmap_size(&fpr_net.peers_map);
     ESP_LOGI(TAG, "========== ROUTE TABLE (%zu peers) ==========", peer_count);
-    
+
     if (peer_count == 0) {
+        _peers_unlock();
         ESP_LOGI(TAG, "  (empty)");
         return;
     }
-    
+    _peers_unlock();
+
     fpr_peer_info_t *peers = heap_caps_malloc(peer_count * sizeof(fpr_peer_info_t), MALLOC_CAP_DEFAULT);
     if (!peers) {
         ESP_LOGE(TAG, "Failed to allocate memory for route table");
         return;
     }
-    
+
     size_t actual = fpr_list_all_peers(peers, peer_count);
     for (size_t i = 0; i < actual; i++) {
         const char *state_str = "UNKNOWN";
@@ -806,13 +883,18 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
     if (peer_mac == NULL) {
         return false;
     }
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    /* Acquire a store reference instead of holding peers_lock across the
+     * (possibly blocking) receive — holding it would starve the RX path
+     * that fills the queue. The reference keeps the store and its queue
+     * alive even if the peer is removed concurrently. */
+    FPR_STORE_HASH_TYPE *peer = _peer_store_acquire(peer_mac);
+    bool result = false;
     if (peer && data && data_size > 0) {
         const size_t CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
         fpr_package_t pkg;
         size_t offset = 0;
         bool expecting_more = false;
-        
+
         while (xQueueReceive(peer->response_queue, &pkg, timeout) == pdPASS) {
             // Use payload_size if set, otherwise fall back to CHUNK_CAP for backwards compatibility
             size_t actual_payload = (pkg.payload_size > 0 && pkg.payload_size <= CHUNK_CAP) 
@@ -831,8 +913,9 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     if (peer->queued_packets > 0) {
                         peer->queued_packets--;
                     }
-                    return true;  // Success - got complete single packet
-    
+                    result = true;
+                    goto out;  // Success - got complete single packet
+
                 case FPR_PACKAGE_TYPE_START:
                     // Begin a multi-packet transfer - reset offset
                     offset = 0;
@@ -868,20 +951,24 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                         peer->queued_packets--;
                     }
                     // Success - got complete multi-packet transfer
-                    return true;
-    
+                    result = true;
+                    goto out;
+
                 default:
                     // Unknown type, ignore
                     continue;
             }
-    
+
             // If we've already filled the buffer, stop early
             if (offset >= (size_t)data_size) {
-                return true;
+                result = true;
+                goto out;
             }
         }
-    }    
-    return false;
+    }
+out:
+    _peer_store_release(peer);
+    return result;
 }
 
 // ========== RECONNECT TASK CONTROL API ==========
@@ -1002,13 +1089,16 @@ esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mo
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
     if (peer) {
         peer->queue_mode = mode;
+        _peers_unlock();
         ESP_LOGI(TAG, "Queue mode for peer " MACSTR " set to %s",
                  MAC2STR(peer_mac), mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
         return ESP_OK;
     }
+    _peers_unlock();
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -1017,12 +1107,12 @@ uint32_t fpr_network_get_peer_queued_packets(uint8_t *peer_mac)
     if (peer_mac == NULL) {
         return 0;
     }
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
-    if (peer) {
-        return peer->queued_packets;
-    }
-    return 0;
+    uint32_t count = peer ? peer->queued_packets : 0;
+    _peers_unlock();
+    return count;
 }
 
 // ========== PEER MANAGEMENT ENHANCEMENTS ==========
@@ -1057,9 +1147,11 @@ esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out)
         .mac_out = mac_out,
         .found = false
     };
-    
+
+    _peers_lock();
     hashmap_foreach(&fpr_net.peers_map, _find_peer_by_name_callback, &ctx);
-    
+    _peers_unlock();
+
     if (!ctx.found) {
         return ESP_ERR_NOT_FOUND;
     }
@@ -1076,33 +1168,32 @@ static void _clear_all_peers_callback(void *key, void *value, void *user_data)
     if (peer) {
         // Remove from ESP-NOW
         esp_now_del_peer(mac);
-
-        // Free response queue if it exists
-        if (peer->response_queue != NULL) {
-            vQueueDelete(peer->response_queue);
-        }
-        /* The peer store itself is owned by the map entry — free it like
-         * _cleanup_peer_entry() does, or every cleared peer leaks. */
-        fpr_security_clear_keys(&peer->security);
-        heap_caps_free(peer);
+        _peer_store_free_or_defer(peer);
     }
 }
 
 esp_err_t fpr_clear_all_peers(void)
 {
+    _peers_lock();
     size_t peer_count = hashmap_size(&fpr_net.peers_map);
-    
+
     if (peer_count == 0) {
+        _peers_unlock();
         ESP_LOGI(TAG, "No peers to clear");
         return ESP_OK;
     }
-    
+
     // Clean up each peer
     hashmap_foreach(&fpr_net.peers_map, _clear_all_peers_callback, NULL);
-    
+
     // Clear the hashmap
     hashmap_clear(&fpr_net.peers_map);
-    
+
+    // Extender routes are useless without the peers they describe
+    hashmap_foreach(&fpr_net.routes_map, _free_route_entry, NULL);
+    hashmap_clear(&fpr_net.routes_map);
+    _peers_unlock();
+
     ESP_LOGI(TAG, "Cleared %zu peers", peer_count);
     return ESP_OK;
 }
@@ -1110,41 +1201,50 @@ esp_err_t fpr_clear_all_peers(void)
 bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, false, TAG, "Peer MAC is NULL");
-    
+
+    _peers_lock();
     FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
     if (peer == NULL) {
+        _peers_unlock();
         ESP_LOGW(TAG, "Peer not found in peer map");
         return false;
     }
-    
+
     // Check if peer was recently seen (within timeout)
     int64_t now_us = esp_timer_get_time();
     int64_t age_us = now_us - peer->last_seen;
     uint64_t age_ms = (uint64_t)US_TO_MS(age_us);
-    
+    int64_t initial_last_seen = peer->last_seen;
+    _peers_unlock();
+
     if (age_ms <= timeout_ms) {
         return true;
     }
-    
+
     // Send a ping (device info) and check response
     esp_err_t err = fpr_network_send_device_info(peer_mac);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to send ping to peer: %s", esp_err_to_name(err));
         return false;
     }
-    
-    // Wait for response by checking if last_seen timestamp updates
+
+    // Wait for response by checking if last_seen timestamp updates.
+    // Re-lookup each iteration: holding the store (or the lock) across
+    // vTaskDelay would both UAF on concurrent removal and starve the RX
+    // path that updates last_seen — the wait could never succeed.
     TickType_t start = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
-    int64_t initial_last_seen = peer->last_seen;
-    
+
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
+        _peers_lock();
         peer = _get_peer_from_map(peer_mac);
-        if (peer && peer->last_seen > initial_last_seen) {
+        bool responded = (peer && peer->last_seen > initial_last_seen);
+        _peers_unlock();
+        if (responded) {
             return true;  // Peer responded
         }
         vTaskDelay(pdMS_TO_TICKS(10));  // Small delay between checks
     }
-    
+
     return false;  // Timeout - peer did not respond
 }

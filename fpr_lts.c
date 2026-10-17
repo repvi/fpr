@@ -20,6 +20,7 @@
 #include "fpr/fpr_lts.h"
 #include "esp_log.h"
 #include <stdio.h>
+#include <string.h>
 
 static const char *TAG = "fpr_lts";
 

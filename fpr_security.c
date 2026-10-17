@@ -25,7 +25,6 @@ esp_err_t fpr_security_generate_pwk(uint8_t *pwk_out)
     esp_fill_random(pwk_out, FPR_KEY_SIZE);
     
     ESP_LOGI(TAG, "Generated new PWK");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, pwk_out, FPR_KEY_SIZE, ESP_LOG_DEBUG);
     
     return ESP_OK;
 }
@@ -38,7 +37,6 @@ esp_err_t fpr_security_generate_lwk(uint8_t *lwk_out)
     esp_fill_random(lwk_out, FPR_KEY_SIZE);
     
     ESP_LOGI(TAG, "Generated new LWK");
-    ESP_LOG_BUFFER_HEX_LEVEL(TAG, lwk_out, FPR_KEY_SIZE, ESP_LOG_DEBUG);
     
     return ESP_OK;
 }
@@ -53,8 +51,6 @@ bool fpr_security_verify_pwk(const uint8_t *pwk_received, const uint8_t *pwk_exp
     
     if (!match) {
         ESP_LOGW(TAG, "PWK verification failed");
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, pwk_received, FPR_KEY_SIZE, ESP_LOG_DEBUG);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, pwk_expected, FPR_KEY_SIZE, ESP_LOG_DEBUG);
     } else {
         ESP_LOGD(TAG, "PWK verified successfully");
     }
@@ -72,8 +68,6 @@ bool fpr_security_verify_lwk(const uint8_t *lwk_received, const uint8_t *lwk_exp
     
     if (!match) {
         ESP_LOGW(TAG, "LWK verification failed");
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, lwk_received, FPR_KEY_SIZE, ESP_LOG_DEBUG);
-        ESP_LOG_BUFFER_HEX_LEVEL(TAG, lwk_expected, FPR_KEY_SIZE, ESP_LOG_DEBUG);
     } else {
         ESP_LOGD(TAG, "LWK verified successfully");
     }

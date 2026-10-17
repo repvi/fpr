@@ -68,20 +68,20 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
  * @brief Deinitialize the FPR network and release resources.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_deinit();
+esp_err_t fpr_network_deinit(void);
 
 /**
  * @brief Start the FPR network and register receive callback.
  * @param on_data_recv Callback for received data.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_start();
+esp_err_t fpr_network_start(void);
 
 /**
  * @brief Stop the FPR network.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_stop();
+esp_err_t fpr_network_stop(void);
 
 /**
  * @brief Pause the FPR network without full stop.
@@ -144,7 +144,7 @@ fpr_queue_mode_t fpr_network_get_queue_mode(void);
  * @param mode Queue mode to set.
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if peer not found.
  */
-esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mode);
+esp_err_t fpr_network_set_peer_queue_mode(const uint8_t *peer_mac, fpr_queue_mode_t mode);
 
 /**
  * @brief Get the number of complete packets queued for a peer.
@@ -152,7 +152,7 @@ esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mo
  * @return Number of complete packets in queue, or 0 if peer not found.
  * @note Useful for monitoring queue depth and detecting backlog.
  */
-uint32_t fpr_network_get_peer_queued_packets(uint8_t *peer_mac);
+uint32_t fpr_network_get_peer_queued_packets(const uint8_t *peer_mac);
 
 /**
  * @brief Set the network operating mode.
@@ -165,7 +165,7 @@ void fpr_network_set_mode(fpr_mode_type_t mode);
  * @brief Get the current network operating mode.
  * @return Current mode (FPR_MODE_CLIENT, FPR_MODE_HOST, FPR_MODE_EXTENDER, or FPR_MODE_BROADCAST).
  */
-fpr_mode_type_t fpr_network_get_mode();
+fpr_mode_type_t fpr_network_get_mode(void);
 
 /**
  * @brief Add a new peer to the network.
@@ -173,14 +173,14 @@ fpr_mode_type_t fpr_network_get_mode();
  * @return ESP_OK on success, ESP_ERR_INVALID_STATE if the MAC already
  *         exists (the existing peer is unchanged), error code otherwise.
  */
-esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
+esp_err_t fpr_network_add_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Remove a peer from the network.
  * @param peer_mac MAC address of the peer to remove.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_remove_peer(uint8_t *peer_mac);
+esp_err_t fpr_network_remove_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Start the network discovery/maintenance loop task.
@@ -195,13 +195,13 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart);
  * @brief Stop the network discovery/maintenance loop task.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_stop_loop_task();
+esp_err_t fpr_network_stop_loop_task(void);
 
 /**
  * @brief Check if the loop task is currently running.
  * @return true if loop task is active, false otherwise.
  */
-bool fpr_network_is_loop_task_running();
+bool fpr_network_is_loop_task_running(void);
 
 /**
  * @brief Send data with custom options (max hops, etc).
@@ -211,7 +211,7 @@ bool fpr_network_is_loop_task_running();
  * @param options Send options (max_hops, package_type, etc).
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, const fpr_send_options_t *options);
+esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options);
 
 /**
  * @brief Send data to the connected peer.
@@ -220,7 +220,7 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
  * @param size Size of data buffer.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
+esp_err_t fpr_network_send_to_peer(const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id);
 
 /**
  * @brief Broadcast data to all peers.
@@ -228,7 +228,7 @@ esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, 
  * @param len Length of data buffer.
  * @return ESP_OK on success, error code otherwise.
  */
-esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_id);
+esp_err_t fpr_network_broadcast(const void *data, int size, fpr_package_id_t package_id);
 
 /**
  * @brief Send device information (name, capabilities) to a specific peer.
@@ -236,20 +236,20 @@ esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_i
  * @return ESP_OK on success, error code otherwise.
  * @note Used during handshake and connection establishment.
  */
-esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
+esp_err_t fpr_network_send_device_info(const uint8_t *peer_address);
 
 /**
  * @brief Broadcast device information to all reachable peers.
  * @return ESP_OK on success, error code otherwise.
  * @note Useful for announcing presence or capabilities to the network.
  */
-esp_err_t fpr_network_broadcast_device_info();
+esp_err_t fpr_network_broadcast_device_info(void);
 
 /**
  * @brief Gets number of peers found
  * @return Count of discovered peers
  */
-int fpr_network_get_peer_count();
+int fpr_network_get_peer_count(void);
 
 /**
  * @brief Find a peer by name.
@@ -273,7 +273,7 @@ esp_err_t fpr_clear_all_peers(void);
  * @return true if peer responded, false if timeout or unreachable.
  * @note Sends a ping message and waits for acknowledgment.
  */
-bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms);
+bool fpr_is_peer_reachable(const uint8_t *peer_mac, uint32_t timeout_ms);
 
 /**
  * @brief Check if client is connected to a host.
@@ -353,7 +353,7 @@ void fpr_reset_network_stats(void);
  * @param info Pointer to structure to fill with peer info.
  * @return ESP_OK on success, ESP_ERR_NOT_FOUND if peer not found.
  */
-esp_err_t fpr_get_peer_info(uint8_t *peer_mac, fpr_peer_info_t *info);
+esp_err_t fpr_get_peer_info(const uint8_t *peer_mac, fpr_peer_info_t *info);
 
 /**
  * @brief List all discovered peers.
@@ -402,35 +402,35 @@ extern size_t fpr_host_get_connected_count(void);
  * @param peer_mac MAC address of peer to approve.
  * @return ESP_OK on success, error code otherwise.
  */
-extern esp_err_t fpr_host_approve_peer(uint8_t *peer_mac);
+extern esp_err_t fpr_host_approve_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Manually reject a connection request (host mode).
  * @param peer_mac MAC address of peer to reject.
  * @return ESP_OK on success, error code otherwise.
  */
-extern esp_err_t fpr_host_reject_peer(uint8_t *peer_mac);
+extern esp_err_t fpr_host_reject_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Block a peer from connecting (host mode).
  * @param peer_mac MAC address of peer to block.
  * @return ESP_OK on success, error code otherwise.
  */
-extern esp_err_t fpr_host_block_peer(uint8_t *peer_mac);
+extern esp_err_t fpr_host_block_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Unblock a previously blocked peer (host mode).
  * @param peer_mac MAC address of peer to unblock.
  * @return ESP_OK on success, error code otherwise.
  */
-extern esp_err_t fpr_host_unblock_peer(uint8_t *peer_mac);
+extern esp_err_t fpr_host_unblock_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Disconnect a connected peer (host mode).
  * @param peer_mac MAC address of peer to disconnect.
  * @return ESP_OK on success, error code otherwise.
  */
-extern esp_err_t fpr_host_disconnect_peer(uint8_t *peer_mac);
+extern esp_err_t fpr_host_disconnect_peer(const uint8_t *peer_mac);
 
 /**
  * @brief Configure client mode with connection control settings.
@@ -460,7 +460,7 @@ extern size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size
  * @param timeout Maximum time to wait for connection.
  * @return ESP_OK if connected, error code otherwise.
  */
-extern esp_err_t fpr_client_connect_to_host(uint8_t *peer_mac, TickType_t timeout);
+extern esp_err_t fpr_client_connect_to_host(const uint8_t *peer_mac, TickType_t timeout);
 
 /**
  * @brief Disconnect from current host (client mode).
@@ -484,7 +484,7 @@ extern size_t fpr_client_scan_for_hosts(TickType_t duration);
  * @return true if data was received within timeout, false otherwise.
  * @note This is a blocking call. Use the callback API for non-blocking async reception.
  */
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout);
+bool fpr_network_get_data_from_peer(const uint8_t *peer_mac, void *data, int data_size, TickType_t timeout);
 
 /**
  * @brief Start persistent background reconnect/keepalive monitoring.

@@ -28,13 +28,13 @@ static inline void _safe_string_copy(char *dest, const char *src, size_t dest_si
 }
 
 // Helper: Get peer from hashmap with type cast
-static inline FPR_STORE_HASH_TYPE *_get_peer_from_map(const uint8_t *peer_mac)
+static inline FPR_STORE_HASH_TYPE *_peer_from_map(const uint8_t *peer_mac)
 {
     return (FPR_STORE_HASH_TYPE *)hashmap_get(&fpr_net.peers_map, peer_mac);
 }
 
 // Helper: Update peer RSSI and timestamp from ESP-NOW info
-static inline void _update_peer_rssi_and_timestamp(FPR_STORE_HASH_TYPE *peer, const esp_now_recv_info_t *esp_now_info)
+static inline void _peer_touch(FPR_STORE_HASH_TYPE *peer, const esp_now_recv_info_t *esp_now_info)
 {
     if (peer && esp_now_info) {
         peer->last_seen = esp_timer_get_time();
@@ -45,7 +45,7 @@ static inline void _update_peer_rssi_and_timestamp(FPR_STORE_HASH_TYPE *peer, co
 }
 
 // Helper: Get interval adjusted for power mode
-static inline uint32_t _fpr_get_power_adjusted_interval(uint32_t base_interval_ms)
+static inline uint32_t _power_interval(uint32_t base_interval_ms)
 {
     if (fpr_net.power_mode == FPR_POWER_LOW) {
         if (base_interval_ms > UINT32_MAX / FPR_LOW_POWER_MULTIPLIER) {
@@ -63,12 +63,6 @@ static inline bool is_broadcast_address(const uint8_t *mac)
     }
     const uint8_t broadcast_addr[6] = FPR_BROADCAST_ADDRESS;
     return (memcmp(mac, broadcast_addr, 6) == 0);
-}
-
-// should be global function
-static inline bool is_address_broadcast(const uint8_t *mac)
-{
-    return is_broadcast_address(mac);
 }
 
 static inline bool is_fpr_package_compatible(int len)
@@ -130,8 +124,8 @@ static inline void _peer_store_free_or_defer(FPR_STORE_HASH_TYPE *peer)
 
 /* Cooperative task stop/exit shared by the task bodies in fpr.c,
  * fpr_client.c and fpr_host.c — see the implementations in fpr.c. */
-void _fpr_stop_task(TaskHandle_t *handle, volatile bool *stop_flag);
-void _fpr_task_exit(TaskHandle_t *slot);
+void _task_stop(TaskHandle_t *handle, volatile bool *stop_flag);
+void _task_exit(TaskHandle_t *slot);
 
 /* Acquire a temporary reference on the store for `mac`. The reference
  * keeps the store (and its response queue) alive after _peers_unlock(),
@@ -144,7 +138,7 @@ static inline FPR_STORE_HASH_TYPE *_peer_store_acquire(const uint8_t *mac)
         return NULL;
     }
     _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map((uint8_t *)mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(mac);
     if (peer) {
         peer->refcount++;
     }
@@ -187,11 +181,11 @@ static inline void _reset_peer_connection(FPR_STORE_HASH_TYPE *peer, fpr_peer_st
     peer->fragment_seq_num = 0;
 }
 
-void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data);
+void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data);
 
-esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key);
+esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key);
 
-esp_err_t _add_discovered_peer(const char *name, uint8_t *address, uint32_t key, bool is_connected);
+esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, uint32_t key, bool is_connected);
 
-void _copy_peer_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info);
+void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info);
 fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);

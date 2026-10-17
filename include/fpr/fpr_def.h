@@ -78,12 +78,15 @@ typedef int fpr_package_id_t;
 #define FPR_PACKET_ID_CONTROL (-1)
 
 typedef enum {
-    FPR_MODE_DEFUALT = 0,
+    FPR_MODE_DEFAULT = 0,
     FPR_MODE_CLIENT,
     FPR_MODE_HOST,
     FPR_MODE_BROADCAST,
     FPR_MODE_EXTENDER
 } fpr_mode_type_t;
+
+/* Compat alias — the original spelling shipped with the typo. */
+#define FPR_MODE_DEFUALT FPR_MODE_DEFAULT
 
 typedef enum {
     FPR_CONNECTION_AUTO = 0,    // Automatically accept/connect to discovered peers

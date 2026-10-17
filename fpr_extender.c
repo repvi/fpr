@@ -41,7 +41,7 @@
 
 static const char *TAG = "fpr_extender";
 
-static bool _should_forward_packet(const fpr_package_t *package)
+static bool _should_forward_packet(const fpr_package_t *package, bool is_for_me, bool is_broadcast)
 {
     // Don't forward if we're the origin
     if (memcmp(package->origin_mac, fpr_net.mac, 6) == 0) {
@@ -54,13 +54,8 @@ static bool _should_forward_packet(const fpr_package_t *package)
         return false;
     }
 
-    // Check if destination is broadcast or someone else
-    const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    bool is_broadcast_dest = (memcmp(package->dest_mac, broadcast_mac, 6) == 0);
-    bool is_for_me = (memcmp(package->dest_mac, fpr_net.mac, 6) == 0);
-
     // Forward if broadcast or not for me
-    return (is_broadcast_dest || !is_for_me);
+    return (is_broadcast || !is_for_me);
 }
 
 /* Forward the received package itself: origin/dest/sequence/version and
@@ -79,7 +74,7 @@ static esp_err_t _forward_package(const uint8_t *next_hop, const fpr_package_t *
     return result;
 }
 
-void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
 {
     #if (FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Extender received packet - len: %d, from: " MACSTR ", to: " MACSTR,
@@ -120,20 +115,20 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
         _peers_unlock();
         return;
     }
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(esp_now_info->src_addr);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(esp_now_info->src_addr);
     if (peer) {
-        _update_peer_rssi_and_timestamp(peer, esp_now_info);
+        _peer_touch(peer, esp_now_info);
         peer->packets_received++;
         if (peer->hop_count == 0) {
             peer->hop_count = 1;
         }
     } else {
         // Add new peer
-        _add_peer_internal(esp_now_info->src_addr, NULL, false, 0);
-        peer = _get_peer_from_map(esp_now_info->src_addr);
+        _peer_add(esp_now_info->src_addr, NULL, false, 0);
+        peer = _peer_from_map(esp_now_info->src_addr);
         if (peer) {
             peer->hop_count = 1;
-            _update_peer_rssi_and_timestamp(peer, esp_now_info);
+            _peer_touch(peer, esp_now_info);
         }
     }
 
@@ -185,7 +180,7 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
     }
     
     // Forward packet if routing enabled and appropriate
-    if (fpr_net.routing_enabled && _should_forward_packet(package)) {
+    if (fpr_net.routing_enabled && _should_forward_packet(package, is_for_me, is_broadcast)) {
         package->hop_count++;  // Increment hop count on our local copy
 
         // Determine next hop
@@ -201,7 +196,7 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
                 next_hop = route->next_hop_mac;
             } else {
                 // Fallback: destination heard directly before routes existed
-                FPR_STORE_HASH_TYPE *dest_peer = _get_peer_from_map(package->dest_mac);
+                FPR_STORE_HASH_TYPE *dest_peer = _peer_from_map(package->dest_mac);
                 if (dest_peer && dest_peer->hop_count > 0) {
                     next_hop = dest_peer->next_hop_mac;
                     if (memcmp(next_hop, (const uint8_t[6]){0}, 6) == 0) {

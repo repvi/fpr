@@ -68,10 +68,10 @@ static const char *TAG = "fpr";
 /* Cooperative-stop grace for the loop/reconnect tasks: they poll their
  * stop flag once per configured poll interval (power-mode stretched),
  * so the window must cover one worst-case iteration plus lock hold. */
-static inline TickType_t _fpr_task_stop_grace_ticks(void)
+static inline TickType_t _task_stop_grace(void)
 {
     uint32_t grace_ms =
-        2 * _fpr_get_power_adjusted_interval(FPR_HOST_SCAN_POLL_INTERVAL_MS) + 250;
+        2 * _power_interval(FPR_HOST_SCAN_POLL_INTERVAL_MS) + 250;
     return pdMS_TO_TICKS(grace_ms);
 }
 
@@ -79,14 +79,14 @@ static inline TickType_t _fpr_task_stop_grace_ticks(void)
  * slot. vTaskDelete remains the fallback for a wedged task — but only
  * after a full grace window, because a task killed while holding
  * peers_lock strands the recursive mutex for every later caller. */
-void _fpr_stop_task(TaskHandle_t *handle, volatile bool *stop_flag)
+void _task_stop(TaskHandle_t *handle, volatile bool *stop_flag)
 {
     if (handle == NULL || *handle == NULL) {
         return;
     }
     TaskHandle_t target = *handle;
     *stop_flag = true;
-    TickType_t deadline = xTaskGetTickCount() + _fpr_task_stop_grace_ticks();
+    TickType_t deadline = xTaskGetTickCount() + _task_stop_grace();
     while (*handle == target &&
            (int32_t)(xTaskGetTickCount() - deadline) < 0) {
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -102,7 +102,7 @@ void _fpr_stop_task(TaskHandle_t *handle, volatile bool *stop_flag)
 /* Exit path for an fpr-owned task: clear the handle slot only if it
  * still names this task — a restarted instance may already have
  * replaced it — then self-delete. */
-void _fpr_task_exit(TaskHandle_t *slot)
+void _task_exit(TaskHandle_t *slot)
 {
     _peers_lock();
     if (*slot == xTaskGetCurrentTaskHandle()) {
@@ -126,14 +126,14 @@ static void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer)
 
 // ========== INTERNAL FUNCTIONS ==========
 
-static esp_err_t _remove_peer_internal(uint8_t *peer_mac)
+static esp_err_t _peer_remove(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock();
     /* The map key may point inside the store we are about to release. */
     uint8_t mac[MAC_ADDRESS_LENGTH];
     memcpy(mac, peer_mac, sizeof(mac));
-    FPR_STORE_HASH_TYPE *var = _get_peer_from_map(mac);
+    FPR_STORE_HASH_TYPE *var = _peer_from_map(mac);
     esp_err_t result;
     if (var != NULL) {
         if (!hashmap_remove(&fpr_net.peers_map, mac)) {
@@ -147,7 +147,7 @@ static esp_err_t _remove_peer_internal(uint8_t *peer_mac)
     return result;
 }
 
-static void _cleanup_peer_entry(void *key, void *value, void *user_data)
+static void _peer_cleanup_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     (void)user_data;
@@ -160,10 +160,10 @@ static void _cleanup_peer_entry(void *key, void *value, void *user_data)
 
 static void _reset_all_peers(void)
 {
-    hashmap_foreach(&fpr_net.peers_map, _cleanup_peer_entry, NULL);
+    hashmap_foreach(&fpr_net.peers_map, _peer_cleanup_cb, NULL);
 }
 
-static void _free_route_entry(void *key, void *value, void *user_data)
+static void _route_free_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     (void)user_data;
@@ -171,7 +171,7 @@ static void _free_route_entry(void *key, void *value, void *user_data)
 }
 
 // Helper: Setup broadcast peer configuration
-static void _setup_broadcast_peer(void)
+static void _broadcast_peer_setup(void)
 {
     const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
     memcpy(broadcast_info.peer_addr, broadcast_mac, 6);
@@ -180,7 +180,7 @@ static void _setup_broadcast_peer(void)
 
 // Helper: Add broadcast peer to ESP-NOW
 // this needs to be called whenever we change mode (host/client/extender)
-static esp_err_t _add_broadcast_peer(const char *mode_name)
+static esp_err_t _broadcast_peer_add(const char *mode_name)
 {
     esp_now_del_peer(broadcast_info.peer_addr);
     esp_err_t err = esp_now_add_peer(&broadcast_info);
@@ -227,8 +227,8 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     }
     
     // Initialize broadcast peer info
-    _setup_broadcast_peer();
-    _add_broadcast_peer("default");
+    _broadcast_peer_setup();
+    _broadcast_peer_add("default");
     
     fpr_net.access_state = FPR_VISIBILITY_PUBLIC;
     
@@ -309,8 +309,8 @@ esp_err_t fpr_network_deinit(void)
      * for every later caller (FreeRTOS never releases a dead task's
      * mutexes). The helper joins on the task clearing its own handle
      * slot inside a poll-interval grace window. */
-    _fpr_stop_task(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
-    _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
+    _task_stop(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
+    _task_stop(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
 
     esp_err_t esp_now_result = esp_now_deinit();
 
@@ -328,7 +328,7 @@ esp_err_t fpr_network_deinit(void)
     _peers_lock();
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
-    hashmap_foreach(&fpr_net.routes_map, _free_route_entry, NULL);
+    hashmap_foreach(&fpr_net.routes_map, _route_free_cb, NULL);
     hashmap_free(&fpr_net.routes_map);
     _peers_unlock();
 
@@ -345,7 +345,7 @@ esp_err_t fpr_network_deinit(void)
 }
 
 // default
-static void _handle_default_send_complete(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
+static void _tx_done(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
 {
     #if (FPR_DEBUG == 1)
     if (status == ESP_NOW_SEND_SUCCESS) {
@@ -356,13 +356,15 @@ static void _handle_default_send_complete(const wifi_tx_info_t *tx_info, esp_now
     #endif
 }
 
-esp_err_t fpr_network_start()
+esp_err_t fpr_network_start(void)
 {
+    ESP_RETURN_ON_FALSE(fpr_net.state == FPR_STATE_INITIALIZED || fpr_net.state == FPR_STATE_STOPPED,
+                        ESP_ERR_INVALID_STATE, TAG, "Network not initialized (state %d)", fpr_net.state);
     wifi_mode_t mode;
     ESP_RETURN_ON_ERROR(esp_wifi_get_mode(&mode), TAG, "WiFi is not initialized");
     ESP_RETURN_ON_FALSE(mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA, ESP_ERR_INVALID_STATE, TAG, "WiFi is not started or in STA/APSTA mode");
-    ESP_RETURN_ON_ERROR(esp_now_register_send_cb(_handle_default_send_complete), TAG, "Failed to register send callback");
-    ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(_handle_client_discovery), TAG, "Failed to register receive callback");
+    ESP_RETURN_ON_ERROR(esp_now_register_send_cb(_tx_done), TAG, "Failed to register send callback");
+    ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(_rx_client), TAG, "Failed to register receive callback");
 
     fpr_network_set_mode(FPR_MODE_CLIENT);
 
@@ -375,7 +377,7 @@ esp_err_t fpr_network_start()
     return ESP_OK;
 }
 
-esp_err_t fpr_network_stop()
+esp_err_t fpr_network_stop(void)
 {
     if (fpr_net.state == FPR_STATE_STOPPED || fpr_net.state == FPR_STATE_UNINITIALIZED) {
         ESP_LOGW(TAG, "Network already stopped or not initialized");
@@ -390,7 +392,7 @@ esp_err_t fpr_network_stop()
     return ESP_OK;
 }
 
-static esp_err_t fpr_network_override_protocol(esp_now_send_cb_t sender, esp_now_recv_cb_t receiver)
+static esp_err_t _set_protocol_cbs(esp_now_send_cb_t sender, esp_now_recv_cb_t receiver)
 {
     if (sender) {
         ESP_RETURN_ON_ERROR(esp_now_unregister_send_cb(), TAG, "Failed to unregister send callback");
@@ -405,7 +407,7 @@ static esp_err_t fpr_network_override_protocol(esp_now_send_cb_t sender, esp_now
     return ESP_OK;
 }
 
-static void _fpr_handle_client_loop(void *arg)
+static void _task_client_loop(void *arg)
 {
     TickType_t duration = (TickType_t)(uintptr_t)arg;
     ESP_LOGI(TAG, "Client loop task started for %u ticks", (unsigned int)duration);
@@ -418,10 +420,10 @@ static void _fpr_handle_client_loop(void *arg)
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FPR_CLIENT_WAIT_CHECK_INTERVAL_MS));
     }
 
-    _fpr_task_exit(&fpr_net.loop_task);
+    _task_exit(&fpr_net.loop_task);
 }
 
-static void _fpr_handle_host_loop(void *arg)
+static void _task_host_loop(void *arg)
 {
     TickType_t duration = (TickType_t)(uintptr_t)arg;
     ESP_LOGI(TAG, "Host loop task started for %u ticks", (unsigned int)duration);
@@ -435,7 +437,7 @@ static void _fpr_handle_host_loop(void *arg)
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FPR_HOST_SCAN_POLL_INTERVAL_MS));
     }
 
-    _fpr_task_exit(&fpr_net.loop_task);
+    _task_exit(&fpr_net.loop_task);
 }
 
 void fpr_network_set_mode(fpr_mode_type_t mode)
@@ -446,11 +448,11 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
 
     // Add broadcast peer for host and client modes (required for broadcasts)
     if (mode == FPR_MODE_CLIENT) {
-        _add_broadcast_peer("client");
-        fpr_network_override_protocol(NULL, _handle_client_discovery);
+        _broadcast_peer_add("client");
+        _set_protocol_cbs(NULL, _rx_client);
     }
     else if (mode == FPR_MODE_HOST) {
-        _add_broadcast_peer("host");
+        _broadcast_peer_add("host");
         // Generate host PWK for secure connections — under the lock so
         // rx callbacks never observe a valid flag ahead of the key bytes
         _peers_lock();
@@ -461,27 +463,27 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
             ESP_LOGE(TAG, "Failed to generate PWK for host mode");
         }
         _peers_unlock();
-        fpr_network_override_protocol(NULL, _handle_host_receive);
+        _set_protocol_cbs(NULL, _rx_host);
     }
     else if (mode == FPR_MODE_EXTENDER) {
-        _add_broadcast_peer("extender");
-        fpr_network_override_protocol(NULL, _handle_extender_receive);
+        _broadcast_peer_add("extender");
+        _set_protocol_cbs(NULL, _rx_extender);
     }
 }
 
-fpr_mode_type_t fpr_network_get_mode()
+fpr_mode_type_t fpr_network_get_mode(void)
 {
     return fpr_net.current_mode;
 }
 
-esp_err_t fpr_network_add_peer(uint8_t *peer_mac)
+esp_err_t fpr_network_add_peer(const uint8_t *peer_mac)
 {
-    return _add_peer_internal(peer_mac, NULL, false, 0);
+    return _peer_add(peer_mac, NULL, false, 0);
 }
 
-esp_err_t fpr_network_remove_peer(uint8_t *peer_mac)
+esp_err_t fpr_network_remove_peer(const uint8_t *peer_mac)
 {
-    return _remove_peer_internal(peer_mac);
+    return _peer_remove(peer_mac);
 }
 
 esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
@@ -494,16 +496,16 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
     }
 
     if (force_restart && fpr_net.loop_task != NULL) {
-        _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
+        _task_stop(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
     }
     fpr_net.loop_stop_requested = false;
 
     BaseType_t result;
     if (fpr_net.current_mode == FPR_MODE_CLIENT) {
-        result = xTaskCreate(_fpr_handle_client_loop, "FPR_Client_Loop", 4096, (void *)(uintptr_t)duration, tskIDLE_PRIORITY + 1, &fpr_net.loop_task);
+        result = xTaskCreate(_task_client_loop, "FPR_Client_Loop", 4096, (void *)(uintptr_t)duration, tskIDLE_PRIORITY + 1, &fpr_net.loop_task);
     }
     else if (fpr_net.current_mode == FPR_MODE_HOST) {
-        result = xTaskCreate(_fpr_handle_host_loop, "FPR_Host_Loop", 4096, (void *)(uintptr_t)duration, tskIDLE_PRIORITY + 1, &fpr_net.loop_task);
+        result = xTaskCreate(_task_host_loop, "FPR_Host_Loop", 4096, (void *)(uintptr_t)duration, tskIDLE_PRIORITY + 1, &fpr_net.loop_task);
     }
     else if (fpr_net.current_mode == FPR_MODE_EXTENDER) {
         return ESP_ERR_NOT_SUPPORTED; // Extender mode does not support loop tasks
@@ -516,25 +518,24 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
     return (result == pdPASS) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-esp_err_t fpr_network_stop_loop_task()
+esp_err_t fpr_network_stop_loop_task(void)
 {
     if (fpr_net.loop_task == NULL) {
         return ESP_ERR_INVALID_STATE; // No loop task running
     }
     /* Cooperative stop — vTaskDelete here could kill the task while it
      * holds peers_lock, stranding the mutex. */
-    _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
+    _task_stop(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
     return ESP_OK;
 }
 
-bool fpr_network_is_loop_task_running()
+bool fpr_network_is_loop_task_running(void)
 {
     return (fpr_net.loop_task != NULL);
 }
 
 // ========== ADVANCED SEND OPTIONS ==========
-// literally the same thing as below
-esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, const fpr_send_options_t *options)
+esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options)
 {
     ESP_RETURN_ON_FALSE(data != NULL && size > 0, ESP_ERR_INVALID_ARG, TAG, "Invalid data or size");
     ESP_RETURN_ON_FALSE(options != NULL, ESP_ERR_INVALID_ARG, TAG, "Options cannot be NULL");
@@ -549,7 +550,7 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
     int data_remaining = size;
     bool single_packet = ((size_t)size <= PROTOCOL_SIZE);
     bool is_first_packet = true;
-    uint8_t *data_ptr = (uint8_t *)data;
+    const uint8_t *data_ptr = data;
     esp_err_t last_result = ESP_OK;
     
     /* Sequence numbers are shared across senders — the app task, the
@@ -593,10 +594,14 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
         package.version = FPR_NETWORK_VERSION;  // Set protocol version
         
         last_result = esp_now_send(peer_address, (const uint8_t *)&package, sizeof(package));
+        _peers_lock();
         if (last_result == ESP_OK) {
             fpr_net.stats.packets_sent++;
         } else {
             fpr_net.stats.send_failures++;
+        }
+        _peers_unlock();
+        if (last_result != ESP_OK) {
             // Log specific error for debugging
             if (last_result == ESP_ERR_ESPNOW_NO_MEM) {
                 ESP_LOGW(TAG, "ESP-NOW buffer full (NO_MEM), try reducing send rate or increasing receive processing");
@@ -620,8 +625,9 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
     return last_result;
 }
 
-// current does not support bigger than default size. Would need to implement fragmentation later.
-static esp_err_t fpr_network_send_helper(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id) 
+// Thin wrapper: fpr_send_with_options() fragments payloads larger than
+// the per-packet protocol window automatically.
+static esp_err_t fpr_network_send_helper(const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     fpr_send_options_t options = {
         .package_id = package_id,
@@ -630,14 +636,14 @@ static esp_err_t fpr_network_send_helper(uint8_t *peer_address, void *data, int 
     return fpr_send_with_options(peer_address, data, size, &options);
 }
 
-esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_network_send_to_peer(const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     ESP_RETURN_ON_FALSE(peer_address != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer address is NULL");
 
     // Validate peer exists and is connected (unless it's a control packet for handshake)
     if (package_id != FPR_PACKET_ID_CONTROL) {
         _peers_lock();
-        FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_address);
+        FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_address);
         if (peer == NULL) {
             _peers_unlock();
             #if (FPR_DEBUG == 1)
@@ -658,7 +664,7 @@ esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, 
     return fpr_network_send_helper(peer_address, data, size, package_id);
 }
 
-esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_network_broadcast(const void *data, int size, fpr_package_id_t package_id)
 {
     uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
     return fpr_network_send_helper(broadcast_mac, data, size, package_id);
@@ -693,20 +699,19 @@ fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const 
     return info;
 }
 
-static fpr_connect_t make_fpr_info() 
+static fpr_connect_t make_fpr_info(void)
 {
     // No keys by default
     return make_fpr_info_with_keys(false, false, NULL, NULL);
 }
 
-//extern 
-esp_err_t fpr_network_send_device_info(uint8_t *peer_address)
+esp_err_t fpr_network_send_device_info(const uint8_t *peer_address)
 {
     fpr_connect_t info = make_fpr_info();
     return fpr_network_send_to_peer(peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }
-// extern 
-esp_err_t fpr_network_broadcast_device_info()
+
+esp_err_t fpr_network_broadcast_device_info(void)
 {
     fpr_connect_t info = make_fpr_info();
     return fpr_network_broadcast((void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
@@ -740,7 +745,7 @@ typedef struct {
     size_t n;
 } _peer_snapshot_ctx_t;
 
-static void _peer_snapshot_collect(void *key, void *value, void *user_data)
+static void _peer_snapshot_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     _peer_snapshot_ctx_t *ctx = (_peer_snapshot_ctx_t *)user_data;
@@ -769,7 +774,7 @@ size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data)
         return 0;
     }
     _peer_snapshot_ctx_t ctx = { .stores = stores, .cap = n, .n = 0 };
-    hashmap_foreach(&fpr_net.peers_map, _peer_snapshot_collect, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _peer_snapshot_cb, &ctx);
     n = ctx.n;
     _peers_unlock();
 
@@ -838,18 +843,18 @@ void fpr_reset_network_stats(void)
 
 // ========== PEER DISCOVERY & INFO ==========
 
-esp_err_t fpr_get_peer_info(uint8_t *peer_mac, fpr_peer_info_t *info)
+esp_err_t fpr_get_peer_info(const uint8_t *peer_mac, fpr_peer_info_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
     _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
-        ESP_LOGE(TAG, "Peer not found");
+        ESP_LOGD(TAG, "Peer not found");
         return ESP_ERR_NOT_FOUND;
     }
-    _copy_peer_to_info(peer, info);
+    _peer_copy_to_info(peer, info);
     _peers_unlock();
     return ESP_OK;
 }
@@ -860,14 +865,14 @@ typedef struct {
     size_t count;
 } peer_list_ctx_t;
 
-static void _list_peers_callback(void *key, void *value, void *user_data)
+static void _peer_list_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     peer_list_ctx_t *ctx = (peer_list_ctx_t *)user_data;
     
     if (ctx->count < ctx->max_peers && peer) {
-        _copy_peer_to_info(peer, &ctx->array[ctx->count]);
+        _peer_copy_to_info(peer, &ctx->array[ctx->count]);
         ctx->count++;
     }
 }
@@ -885,7 +890,7 @@ size_t fpr_list_all_peers(fpr_peer_info_t *peer_array, size_t max_peers)
     };
 
     _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _list_peers_callback, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _peer_list_cb, &ctx);
     _peers_unlock();
     return ctx.count;
 }
@@ -897,9 +902,9 @@ typedef struct {
     size_t removed_count;
 } route_cleanup_ctx_t;
 
-static void _cleanup_stale_routes_callback(void *key, void *value, void *user_data)
+static void _route_peer_stale_cb(void *key, void *value, void *user_data)
 {
-    uint8_t *mac = (uint8_t *)key;
+    const uint8_t *mac = (const uint8_t *)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     route_cleanup_ctx_t *ctx = (route_cleanup_ctx_t *)user_data;
 
@@ -909,15 +914,15 @@ static void _cleanup_stale_routes_callback(void *key, void *value, void *user_da
         if (age_ms > ctx->stale_timeout_ms) {
             ESP_LOGI(TAG, "Removing stale route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
-            _remove_peer_internal(mac);
+            _peer_remove(mac);
             ctx->removed_count++;
         }
     }
 }
 
-static void _cleanup_stale_route_entry(void *key, void *value, void *user_data)
+static void _route_stale_cb(void *key, void *value, void *user_data)
 {
-    uint8_t *mac = (uint8_t *)key;
+    const uint8_t *mac = (const uint8_t *)key;
     fpr_route_entry_t *route = (fpr_route_entry_t *)value;
     route_cleanup_ctx_t *ctx = (route_cleanup_ctx_t *)user_data;
 
@@ -942,8 +947,8 @@ size_t fpr_cleanup_stale_routes(uint32_t timeout_ms)
     };
 
     _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _cleanup_stale_routes_callback, &ctx);
-    hashmap_foreach(&fpr_net.routes_map, _cleanup_stale_route_entry, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _route_peer_stale_cb, &ctx);
+    hashmap_foreach(&fpr_net.routes_map, _route_stale_cb, &ctx);
     _peers_unlock();
 
     if (ctx.removed_count > 0) {
@@ -999,7 +1004,7 @@ void fpr_print_route_table(void)
 
 // ========== CONNECTION CONTROL API IMPLEMENTATION ==========
 
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout)
+bool fpr_network_get_data_from_peer(const uint8_t *peer_mac, void *data, int data_size, TickType_t timeout)
 {
     if (peer_mac == NULL) {
         return false;
@@ -1039,17 +1044,15 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                 continue;
             }
             // Use payload_size if set, otherwise fall back to CHUNK_CAP for backwards compatibility
-            size_t actual_payload = (pkg.payload_size > 0 && pkg.payload_size <= CHUNK_CAP) 
+            size_t actual_payload = (pkg.payload_size > 0 && pkg.payload_size <= CHUNK_CAP)
                                     ? pkg.payload_size : CHUNK_CAP;
-            
+
             // Calculate how much to copy - don't exceed remaining buffer space
             size_t remaining_space = (size_t)data_size - offset;
             size_t copy_size = (remaining_space < actual_payload) ? remaining_space : actual_payload;
-    
+
             switch (pkg.package_type) {
                 case FPR_PACKAGE_TYPE_SINGLE:
-                    // Single packet - copy the actual payload size
-                    copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
                     memcpy(data, &pkg.protocol, copy_size);
                     // Decrement queued packet count (complete packet consumed)
                     _peer_dec_queued(peer);
@@ -1057,11 +1060,12 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     goto out;  // Success - got complete single packet
 
                 case FPR_PACKAGE_TYPE_START:
-                    // Begin a multi-packet transfer - reset offset
+                    // Begin a multi-packet transfer - reset offset; a START
+                    // arriving mid-read restarts the message, so recompute
+                    // the bound against the full buffer.
                     offset = 0;
                     expecting_more = true;
-                    remaining_space = (size_t)data_size;
-                    copy_size = (remaining_space < actual_payload) ? remaining_space : actual_payload;
+                    copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
                     offset += copy_size;
                     break;
@@ -1123,11 +1127,11 @@ esp_err_t fpr_network_start_reconnect_task(void)
     BaseType_t result;
     if (fpr_net.current_mode == FPR_MODE_CLIENT) {
         // Override protocol handler to keep connection logic active
-        result = xTaskCreatePinnedToCore(_fpr_client_reconnect_task, "FPR_Client_Reconnect", FPR_TASK_STACK_SIZE, NULL, FPR_TASK_PRIORITY, &fpr_net.reconnect_task, FPR_RECONNECT_TASK_CORE_PIN_VALUE);
+        result = xTaskCreatePinnedToCore(_task_client_reconnect, "FPR_Client_Reconnect", FPR_TASK_STACK_SIZE, NULL, FPR_TASK_PRIORITY, &fpr_net.reconnect_task, FPR_RECONNECT_TASK_CORE_PIN_VALUE);
     }
     else if (fpr_net.current_mode == FPR_MODE_HOST) {
         // Override protocol handler to keep connection logic active
-        result = xTaskCreatePinnedToCore(_fpr_host_reconnect_task, "FPR_Host_Reconnect", FPR_TASK_STACK_SIZE, NULL, FPR_TASK_PRIORITY, &fpr_net.reconnect_task, FPR_RECONNECT_TASK_CORE_PIN_VALUE);
+        result = xTaskCreatePinnedToCore(_task_host_reconnect, "FPR_Host_Reconnect", FPR_TASK_STACK_SIZE, NULL, FPR_TASK_PRIORITY, &fpr_net.reconnect_task, FPR_RECONNECT_TASK_CORE_PIN_VALUE);
     }
     else {
         ESP_LOGE(TAG, "Cannot start reconnect task - invalid mode (must be CLIENT or HOST)");
@@ -1153,7 +1157,7 @@ esp_err_t fpr_network_stop_reconnect_task(void)
     /* Cooperative stop — vTaskDelete here could kill the task while it
      * holds peers_lock (it sends keepalives inside the critical section),
      * stranding the mutex for every later caller. */
-    _fpr_stop_task(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
+    _task_stop(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
 
     ESP_LOGI(TAG, "Reconnect task stopped (handlers/state unchanged)");
     return ESP_OK;
@@ -1231,12 +1235,12 @@ fpr_queue_mode_t fpr_network_get_queue_mode(void)
     return fpr_net.default_queue_mode;
 }
 
-esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mode)
+esp_err_t fpr_network_set_peer_queue_mode(const uint8_t *peer_mac, fpr_queue_mode_t mode)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     
     _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
     if (peer) {
         peer->queue_mode = mode;
         _peers_unlock();
@@ -1248,14 +1252,14 @@ esp_err_t fpr_network_set_peer_queue_mode(uint8_t *peer_mac, fpr_queue_mode_t mo
     return ESP_ERR_NOT_FOUND;
 }
 
-uint32_t fpr_network_get_peer_queued_packets(uint8_t *peer_mac)
+uint32_t fpr_network_get_peer_queued_packets(const uint8_t *peer_mac)
 {
     if (peer_mac == NULL) {
         return 0;
     }
 
     _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
     uint32_t count = peer ? peer->queued_packets : 0;
     _peers_unlock();
     return count;
@@ -1269,7 +1273,7 @@ typedef struct {
     bool found;
 } peer_name_search_ctx_t;
 
-static void _find_peer_by_name_callback(void *key, void *value, void *user_data)
+static void _peer_by_name_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
@@ -1295,7 +1299,7 @@ esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out)
     };
 
     _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _find_peer_by_name_callback, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _peer_by_name_cb, &ctx);
     _peers_unlock();
 
     if (!ctx.found) {
@@ -1305,10 +1309,10 @@ esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out)
     return ESP_OK;
 }
 
-static void _clear_all_peers_callback(void *key, void *value, void *user_data)
+static void _peer_clear_cb(void *key, void *value, void *user_data)
 {
     (void)user_data;
-    uint8_t *mac = (uint8_t *)key;
+    const uint8_t *mac = (const uint8_t *)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     
     if (peer) {
@@ -1330,13 +1334,13 @@ esp_err_t fpr_clear_all_peers(void)
     }
 
     // Clean up each peer
-    hashmap_foreach(&fpr_net.peers_map, _clear_all_peers_callback, NULL);
+    hashmap_foreach(&fpr_net.peers_map, _peer_clear_cb, NULL);
 
     // Clear the hashmap
     hashmap_clear(&fpr_net.peers_map);
 
     // Extender routes are useless without the peers they describe
-    hashmap_foreach(&fpr_net.routes_map, _free_route_entry, NULL);
+    hashmap_foreach(&fpr_net.routes_map, _route_free_cb, NULL);
     hashmap_clear(&fpr_net.routes_map);
     _peers_unlock();
 
@@ -1344,12 +1348,12 @@ esp_err_t fpr_clear_all_peers(void)
     return ESP_OK;
 }
 
-bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms)
+bool fpr_is_peer_reachable(const uint8_t *peer_mac, uint32_t timeout_ms)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, false, TAG, "Peer MAC is NULL");
 
     _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _get_peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGW(TAG, "Peer not found in peer map");
@@ -1383,7 +1387,7 @@ bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms)
 
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
         _peers_lock();
-        peer = _get_peer_from_map(peer_mac);
+        peer = _peer_from_map(peer_mac);
         bool responded = (peer && peer->last_seen > initial_last_seen);
         _peers_unlock();
         if (responded) {

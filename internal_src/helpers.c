@@ -109,18 +109,18 @@ static bool _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
     return true;
 }
 
-void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data)
+void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data)
 {
     fpr_net.stats.packets_received++;
-    uint8_t *peer_address = (uint8_t *)esp_now_info->src_addr;
+    const uint8_t *peer_address = esp_now_info->src_addr;
     /* Recursive: callers in the RX path already hold peers_lock, and the
      * data_callback below may call fpr_network_remove_peer() which takes
      * it again on this same task. */
     _peers_lock();
-    FPR_STORE_HASH_TYPE *store = _get_peer_from_map(peer_address);
+    FPR_STORE_HASH_TYPE *store = _peer_from_map(peer_address);
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
-        _update_peer_rssi_and_timestamp(store, esp_now_info);
+        _peer_touch(store, esp_now_info);
         
         // Replay protection: wrap-aware sequence check.
         // - seq 0 is always allowed (legacy/handshake packets)
@@ -197,7 +197,7 @@ void _store_data_from_peer_helper(const esp_now_recv_info_t *esp_now_info, const
     _peers_unlock();
 }
 
-esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key)
+esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock();
@@ -212,7 +212,7 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
     }
     /* hashmap_put replaces values but keeps the original key pointer.
      * Replacing an owned store would leak it and its response queue. */
-    if (_get_peer_from_map(peer_mac) != NULL) {
+    if (_peer_from_map(peer_mac) != NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Peer already exists");
         return ESP_ERR_INVALID_STATE;
@@ -276,14 +276,14 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
 }
 
 // used by multiple modes
-esp_err_t _add_discovered_peer(const char *name, uint8_t *address, uint32_t key, bool is_connected) 
+esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, uint32_t key, bool is_connected) 
 {
     ESP_RETURN_ON_FALSE(name != NULL && address != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
-    return _add_peer_internal(address, name, is_connected, key);
+    return _peer_add(address, name, is_connected, key);
 }
 
 // Helper: Copy peer data to info structure
-void _copy_peer_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
+void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
 {
     memcpy(info->mac, peer->peer_info.peer_addr, 6);
     _safe_string_copy(info->name, peer->name, sizeof(info->name));

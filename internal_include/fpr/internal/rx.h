@@ -16,22 +16,22 @@ extern "C" {
 #endif
 
 /** Client-mode receive handler: host discovery, handshake, data. */
-void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
 
 /** Host-mode receive handler: connection requests, handshake, data. */
-void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
 
 /** Extender-mode receive handler: route learning, forwarding, local delivery. */
-void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
 
 /** hashmap_foreach callback used by fpr_client_get_host_info(). */
-void _find_host_callback(void *key, void *value, void *user_data);
+void _host_find_cb(void *key, void *value, void *user_data);
 
 /** Client-mode reconnect/keepalive task body. */
-void _fpr_client_reconnect_task(void *arg);
+void _task_client_reconnect(void *arg);
 
 /** Host-mode reconnect/keepalive task body. */
-void _fpr_host_reconnect_task(void *arg);
+void _task_host_reconnect(void *arg);
 
 #ifdef __cplusplus
 }

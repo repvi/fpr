@@ -74,6 +74,65 @@ static esp_now_peer_info_t broadcast_info;
 
 static const char *TAG = "fpr";
 
+/* Cooperative-stop grace for the loop/reconnect tasks: they poll their
+ * stop flag once per configured poll interval (power-mode stretched),
+ * so the window must cover one worst-case iteration plus lock hold. */
+static inline TickType_t _fpr_task_stop_grace_ticks(void)
+{
+    uint32_t grace_ms =
+        2 * _fpr_get_power_adjusted_interval(FPR_HOST_SCAN_POLL_INTERVAL_MS) + 250;
+    return pdMS_TO_TICKS(grace_ms);
+}
+
+/* Request a cooperative stop and join on the handle clearing its own
+ * slot. vTaskDelete remains the fallback for a wedged task — but only
+ * after a full grace window, because a task killed while holding
+ * peers_lock strands the recursive mutex for every later caller. */
+void _fpr_stop_task(TaskHandle_t *handle, volatile bool *stop_flag)
+{
+    if (handle == NULL || *handle == NULL) {
+        return;
+    }
+    TaskHandle_t target = *handle;
+    *stop_flag = true;
+    TickType_t deadline = xTaskGetTickCount() + _fpr_task_stop_grace_ticks();
+    while (*handle == target &&
+           (int32_t)(xTaskGetTickCount() - deadline) < 0) {
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    if (*handle == target) {
+        ESP_LOGW(TAG, "FPR task did not exit within grace — deleting");
+        vTaskDelete(target);
+        *handle = NULL;
+    }
+    *stop_flag = false;
+}
+
+/* Exit path for an fpr-owned task: clear the handle slot only if it
+ * still names this task — a restarted instance may already have
+ * replaced it — then self-delete. */
+void _fpr_task_exit(TaskHandle_t *slot)
+{
+    _peers_lock();
+    if (*slot == xTaskGetCurrentTaskHandle()) {
+        *slot = NULL;
+    }
+    _peers_unlock();
+    vTaskDelete(NULL);
+}
+
+/* queued_packets is written by the rx path under peers_lock; the
+ * blocking reader here holds only a store reference, so the decrement
+ * must take the lock too or the counter desyncs from the real queue. */
+static void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer)
+{
+    _peers_lock();
+    if (peer->queued_packets > 0) {
+        peer->queued_packets--;
+    }
+    _peers_unlock();
+}
+
 // ========== INTERNAL FUNCTIONS ==========
 
 static esp_err_t _remove_peer_internal(uint8_t *peer_mac)
@@ -197,22 +256,26 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     // Initialize sequence number counter
     fpr_net.tx_sequence_num = 0;
 
-    fpr_net.peers_lock = xSemaphoreCreateRecursiveMutex();
+    /* peers_lock is process-lifetime: created lazily here and never
+     * deleted. A callback or reader may legitimately reach for it after
+     * deinit (esp_now callbacks already dispatched, a blocked
+     * get_data_from_peer waking late) — deleting the semaphore under a
+     * waiter is UB, and the guarded objects are left in hashmap's
+     * safe-empty state anyway. */
     if (fpr_net.peers_lock == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate peers lock");
-        return ESP_ERR_NO_MEM;
+        fpr_net.peers_lock = xSemaphoreCreateRecursiveMutex();
+        if (fpr_net.peers_lock == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate peers lock");
+            return ESP_ERR_NO_MEM;
+        }
     }
     if (!hashmap_init(&fpr_net.peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
         ESP_LOGE(TAG, "Failed to allocate peers map");
-        vSemaphoreDelete(fpr_net.peers_lock);
-        fpr_net.peers_lock = NULL;
         return ESP_ERR_NO_MEM;
     }
     if (!hashmap_init(&fpr_net.routes_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
         ESP_LOGE(TAG, "Failed to allocate routes map");
         hashmap_free(&fpr_net.peers_map);
-        vSemaphoreDelete(fpr_net.peers_lock);
-        fpr_net.peers_lock = NULL;
         return ESP_ERR_NO_MEM;
     }
     esp_err_t esp_now_err = esp_now_init();
@@ -221,8 +284,6 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
          * on a degraded radio leaks the bucket arrays. */
         hashmap_free(&fpr_net.routes_map);
         hashmap_free(&fpr_net.peers_map);
-        vSemaphoreDelete(fpr_net.peers_lock);
-        fpr_net.peers_lock = NULL;
         ESP_LOGE(TAG, "Failed to initialize ESP-NOW: %s", esp_err_to_name(esp_now_err));
         return esp_now_err;
     }
@@ -238,60 +299,56 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     return ESP_OK;
 }
 
-// update the function
 esp_err_t fpr_network_deinit(void)
 {
-    /* Drop the recv callback BEFORE tearing down: nothing new is
-     * dispatched on the wifi task after this point, so only callbacks
-     * already in flight remain below. */
-    esp_now_unregister_recv_cb();
-    esp_err_t esp_now_result = esp_now_deinit();
-
-    // Stop reconnect task if running
-    if (fpr_net.reconnect_task != NULL) {
-        vTaskDelete(fpr_net.reconnect_task);
-        fpr_net.reconnect_task = NULL;
-    }
-
-    // Stop loop task if running
-    if (fpr_net.loop_task != NULL) {
-        vTaskDelete(fpr_net.loop_task);
-        fpr_net.loop_task = NULL;
-    }
-
-    /* Quiesce flag first: any callback still in flight takes the lock,
-     * sees UNINITIALIZED, and the gated write paths (_add_peer_internal,
-     * extender route learning) bail instead of repopulating the maps
-     * this teardown is about to free. */
+    /* Quiesce gate FIRST — peer adds and extender route learning reject
+     * immediately; a callback still in flight sees UNINITIALIZED when it
+     * re-checks state under the lock, before any teardown below runs. */
     _peers_lock();
     fpr_net.state = FPR_STATE_UNINITIALIZED;
     _peers_unlock();
 
+    /* Drop the recv callback before tearing down: nothing new is
+     * dispatched on the wifi task after this point, so only callbacks
+     * already in flight remain below. */
+    esp_now_unregister_recv_cb();
+
+    /* Ask the internal tasks to exit rather than vTaskDelete them: a
+     * task killed while holding peers_lock strands the recursive mutex
+     * for every later caller (FreeRTOS never releases a dead task's
+     * mutexes). The helper joins on the task clearing its own handle
+     * slot inside a poll-interval grace window. */
+    _fpr_stop_task(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
+    _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
+
+    esp_err_t esp_now_result = esp_now_deinit();
+
     /* Drain the callbacks dispatched before the unregister: they finish
-     * on the still-valid lock + maps (writes gated by the flag; reads
-     * still see valid entries). The wifi task outranks every deinit
-     * caller, so a modest delay guarantees it got scheduled. */
+     * on the still-valid lock + maps (writes gated by the state check;
+     * reads still see valid entries). The wifi task outranks every
+     * deinit caller, so a modest delay guarantees it got scheduled. */
     vTaskDelay(pdMS_TO_TICKS(FPR_DEINIT_SETTLE_MS));
 
     /* Now free under the lock. A pathological straggler that still
      * wakes late re-locks a LIVE mutex and reads maps that
      * hashmap_free leaves in a safe empty state — every map op is a
      * no-op returning NULL on NULL buckets — and each deinit pass
-     * below restores exactly that state for the next cycle. */
+     * restores exactly that state for the next cycle. */
     _peers_lock();
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);
     hashmap_foreach(&fpr_net.routes_map, _free_route_entry, NULL);
     hashmap_free(&fpr_net.routes_map);
     _peers_unlock();
-    if (fpr_net.peers_lock != NULL) {
-        vSemaphoreDelete(fpr_net.peers_lock);
-        fpr_net.peers_lock = NULL;
-    }
 
-    // Now safe to zero out the entire structure
+    /* peers_lock survives: a straggler callback or a blocked
+     * get_data_from_peer reader may still reach for it after the memset
+     * — deleting the semaphore under a waiter would be use-after-free.
+     * It is created lazily in init and owned for the process lifetime. */
+    SemaphoreHandle_t kept_lock = fpr_net.peers_lock;
     memset(&fpr_net, 0, sizeof(fpr_net));
     fpr_net.state = FPR_STATE_UNINITIALIZED;
+    fpr_net.peers_lock = kept_lock;
 
     return esp_now_result;
 }
@@ -319,10 +376,12 @@ esp_err_t fpr_network_start()
     fpr_net.sender = _handle_default_send_complete;
     fpr_net.receiver = _handle_client_discovery;
     fpr_network_set_mode(FPR_MODE_CLIENT);
-    
+
+    _peers_lock();
     fpr_net.state = FPR_STATE_STARTED;
     fpr_net.paused = false;
-    
+    _peers_unlock();
+
     ESP_LOGI(TAG, "FPR Network started with MAC: " MACSTR, MAC2STR(fpr_net.mac));
     return ESP_OK;
 }
@@ -334,8 +393,10 @@ esp_err_t fpr_network_stop()
         return ESP_OK;
     }
     
+    _peers_lock();
     fpr_net.state = FPR_STATE_STOPPED;
     fpr_net.paused = false;
+    _peers_unlock();
     ESP_LOGI(TAG, "Network stopped");
     return ESP_OK;
 }
@@ -357,20 +418,20 @@ static esp_err_t fpr_network_override_protocol(esp_now_send_cb_t sender, esp_now
     return ESP_OK;
 }
 
-static void _fpr_handle_client_loop(void *arg) 
+static void _fpr_handle_client_loop(void *arg)
 {
     TickType_t duration = (TickType_t)(uintptr_t)arg;
     ESP_LOGI(TAG, "Client loop task started for %u ticks", (unsigned int)duration);
     TickType_t start = xTaskGetTickCount();
     TickType_t last_wake = start;
 
-    while ((xTaskGetTickCount() - start) < duration) {
+    while (!fpr_net.loop_stop_requested &&
+           (xTaskGetTickCount() - start) < duration) {
         // Just wait - receiver handler does all the work
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FPR_CLIENT_WAIT_CHECK_INTERVAL_MS));
     }
 
-    fpr_net.loop_task = NULL;
-    vTaskDelete(NULL);
+    _fpr_task_exit(&fpr_net.loop_task);
 }
 
 static void _fpr_handle_host_loop(void *arg)
@@ -379,15 +440,15 @@ static void _fpr_handle_host_loop(void *arg)
     ESP_LOGI(TAG, "Host loop task started for %u ticks", (unsigned int)duration);
     TickType_t start = xTaskGetTickCount();
     TickType_t last_wake = start;
-    
-    while ((xTaskGetTickCount() - start) < duration) {
+
+    while (!fpr_net.loop_stop_requested &&
+           (xTaskGetTickCount() - start) < duration) {
         // Just broadcast device info - receiver handler does connection work
         fpr_network_broadcast_device_info();
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(FPR_HOST_SCAN_POLL_INTERVAL_MS));
     }
 
-    fpr_net.loop_task = NULL;
-    vTaskDelete(NULL);
+    _fpr_task_exit(&fpr_net.loop_task);
 }
 
 void fpr_network_set_mode(fpr_mode_type_t mode)
@@ -401,13 +462,16 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
     }
     else if (mode == FPR_MODE_HOST) {
         _add_broadcast_peer("host");
-        // Generate host PWK for secure connections
+        // Generate host PWK for secure connections — under the lock so
+        // rx callbacks never observe a valid flag ahead of the key bytes
+        _peers_lock();
         if (fpr_security_generate_pwk(fpr_net.host_pwk) == ESP_OK) {
             fpr_net.host_pwk_valid = true;
             ESP_LOGI(TAG, "Host mode set with generated PWK");
         } else {
             ESP_LOGE(TAG, "Failed to generate PWK for host mode");
         }
+        _peers_unlock();
         fpr_network_override_protocol(NULL, _handle_host_receive);
     }
     else if (mode == FPR_MODE_EXTENDER) {
@@ -431,16 +495,19 @@ esp_err_t fpr_network_remove_peer(uint8_t *peer_mac)
     return _remove_peer_internal(peer_mac);
 }
 
-esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart) 
+esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart)
 {
+    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
+        return ESP_ERR_INVALID_STATE; // Deinit in progress or never inited
+    }
     if (fpr_net.loop_task != NULL && !force_restart) {
         return ESP_ERR_INVALID_STATE; // Loop already running
     }
 
     if (force_restart && fpr_net.loop_task != NULL) {
-        vTaskDelete(fpr_net.loop_task);
-        fpr_net.loop_task = NULL;
+        _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
     }
+    fpr_net.loop_stop_requested = false;
 
     BaseType_t result;
     if (fpr_net.current_mode == FPR_MODE_CLIENT) {
@@ -465,10 +532,9 @@ esp_err_t fpr_network_stop_loop_task()
     if (fpr_net.loop_task == NULL) {
         return ESP_ERR_INVALID_STATE; // No loop task running
     }
-    /* vTaskDelete(NULL) deletes the CALLING task — the branch order here
-     * must never be inverted. */
-    vTaskDelete(fpr_net.loop_task);
-    fpr_net.loop_task = NULL;
+    /* Cooperative stop — vTaskDelete here could kill the task while it
+     * holds peers_lock, stranding the mutex. */
+    _fpr_stop_task(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
     return ESP_OK;
 }
 
@@ -497,8 +563,13 @@ esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, con
     uint8_t *data_ptr = (uint8_t *)data;
     esp_err_t last_result = ESP_OK;
     
-    // Get sequence number for this transmission (all fragments share same seq)
+    /* Sequence numbers are shared across senders — the app task, the
+     * rx path's handshake replies, and reconnect tasks all bump this.
+     * Take the (recursive) lock so cross-context sends can't mint
+     * duplicates that a receiver's replay check would drop. */
+    _peers_lock();
     uint32_t seq_num = ++fpr_net.tx_sequence_num;
+    _peers_unlock();
     
     while (data_remaining > 0) {
         fpr_package_t package = {0};
@@ -670,17 +741,58 @@ fpr_visibility_t fpr_network_get_permission_state(void)
     return fpr_net.access_state;
 }
 
+/* Collect (and reference) every peer store under the lock so the user
+ * callback can run unlocked — hashmap_foreach only tolerates removal
+ * of the entry currently being visited, but a user callback may remove
+ * any peer or clear the map outright. */
+typedef struct {
+    FPR_STORE_HASH_TYPE **stores;
+    size_t cap;
+    size_t n;
+} _peer_snapshot_ctx_t;
+
+static void _peer_snapshot_collect(void *key, void *value, void *user_data)
+{
+    (void)key;
+    _peer_snapshot_ctx_t *ctx = (_peer_snapshot_ctx_t *)user_data;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    if (peer != NULL && ctx->n < ctx->cap) {
+        peer->refcount++;
+        ctx->stores[ctx->n++] = peer;
+    }
+}
+
 size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data)
 {
-    if (callback) {
-        _peers_lock();
-        size_t n = hashmap_foreach(&fpr_net.peers_map, callback, user_data);
-        _peers_unlock();
-        return n;
-    }
-    else {
+    if (callback == NULL) {
         return 0;
     }
+    _peers_lock();
+    size_t n = hashmap_size(&fpr_net.peers_map);
+    if (n == 0) {
+        _peers_unlock();
+        return 0;
+    }
+    FPR_STORE_HASH_TYPE **stores =
+        heap_caps_calloc(n, sizeof(*stores), MALLOC_CAP_DEFAULT);
+    if (stores == NULL) {
+        _peers_unlock();
+        return 0;
+    }
+    _peer_snapshot_ctx_t ctx = { .stores = stores, .cap = n, .n = 0 };
+    hashmap_foreach(&fpr_net.peers_map, _peer_snapshot_collect, &ctx);
+    n = ctx.n;
+    _peers_unlock();
+
+    /* Unlocked callbacks: each store is refcounted, so the pointer stays
+     * valid even if the callback removes the peer mid-iteration (the
+     * store is just marked dead, freed at release). */
+    for (size_t i = 0; i < n; i++) {
+        callback(stores[i]->peer_info.peer_addr, stores[i], user_data);
+        _peer_store_release(stores[i]);
+    }
+    heap_caps_free(stores);
+    return n;
 }
 
 // ========== APPLICATION CALLBACK REGISTRATION ==========
@@ -914,8 +1026,29 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
         fpr_package_t pkg;
         size_t offset = 0;
         bool expecting_more = false;
+        /* Bound each queue wait: a peer removed while we block marks the
+         * store dead, and after deinit nothing produces — without the
+         * dead check a portMAX_DELAY reader would hang forever holding
+         * the store. */
+        TickType_t waited = 0;
 
-        while (xQueueReceive(peer->response_queue, &pkg, timeout) == pdPASS) {
+        while (1) {
+            if (peer->dead) {
+                goto out;
+            }
+            TickType_t slice = pdMS_TO_TICKS(25);
+            if (timeout != portMAX_DELAY && timeout < slice) {
+                slice = timeout;
+            }
+            if (xQueueReceive(peer->response_queue, &pkg, slice) != pdPASS) {
+                if (timeout != portMAX_DELAY) {
+                    waited += slice;
+                    if (waited >= timeout) {
+                        goto out;
+                    }
+                }
+                continue;
+            }
             // Use payload_size if set, otherwise fall back to CHUNK_CAP for backwards compatibility
             size_t actual_payload = (pkg.payload_size > 0 && pkg.payload_size <= CHUNK_CAP) 
                                     ? pkg.payload_size : CHUNK_CAP;
@@ -930,9 +1063,7 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                     copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
                     memcpy(data, &pkg.protocol, copy_size);
                     // Decrement queued packet count (complete packet consumed)
-                    if (peer->queued_packets > 0) {
-                        peer->queued_packets--;
-                    }
+                    _peer_dec_queued(peer);
                     result = true;
                     goto out;  // Success - got complete single packet
 
@@ -959,17 +1090,13 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
                         // Orphaned END was counted as a complete packet when
                         // queued; dropping it here must decrement too or
                         // queued_packets desyncs from the real queue.
-                        if (peer->queued_packets > 0) {
-                            peer->queued_packets--;
-                        }
+                        _peer_dec_queued(peer);
                         continue; // out of order, skip
                     }
                     memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
                     offset += copy_size;
                     // Decrement queued packet count (complete multi-packet consumed)
-                    if (peer->queued_packets > 0) {
-                        peer->queued_packets--;
-                    }
+                    _peer_dec_queued(peer);
                     // Success - got complete multi-packet transfer
                     result = true;
                     goto out;
@@ -995,10 +1122,14 @@ out:
 
 esp_err_t fpr_network_start_reconnect_task(void)
 {
+    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
+        return ESP_ERR_INVALID_STATE; // Deinit in progress or never inited
+    }
     if (fpr_net.reconnect_task != NULL) {
         ESP_LOGW(TAG, "Reconnect task already running");
         return ESP_ERR_INVALID_STATE;
     }
+    fpr_net.reconnect_stop_requested = false;
 
     BaseType_t result;
     if (fpr_net.current_mode == FPR_MODE_CLIENT) {
@@ -1030,8 +1161,10 @@ esp_err_t fpr_network_stop_reconnect_task(void)
         return ESP_OK; // Already stopped
     }
 
-    vTaskDelete(fpr_net.reconnect_task);
-    fpr_net.reconnect_task = NULL;
+    /* Cooperative stop — vTaskDelete here could kill the task while it
+     * holds peers_lock (it sends keepalives inside the critical section),
+     * stranding the mutex for every later caller. */
+    _fpr_stop_task(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
 
     ESP_LOGI(TAG, "Reconnect task stopped (handlers/state unchanged)");
     return ESP_OK;
@@ -1051,8 +1184,10 @@ esp_err_t fpr_network_pause(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    _peers_lock();
     fpr_net.paused = true;
     fpr_net.state = FPR_STATE_PAUSED;
+    _peers_unlock();
     ESP_LOGI(TAG, "Network paused");
     return ESP_OK;
 }
@@ -1064,8 +1199,10 @@ esp_err_t fpr_network_resume(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    _peers_lock();
     fpr_net.paused = false;
     fpr_net.state = FPR_STATE_STARTED;
+    _peers_unlock();
     ESP_LOGI(TAG, "Network resumed");
     return ESP_OK;
 }

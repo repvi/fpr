@@ -201,10 +201,12 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock();
-    /* Quiesce gate: fpr_network_deinit flips state before emptying the
-     * maps — a callback still in flight from before esp_now_deinit
-     * must not repopulate what teardown just cleared. */
-    if (fpr_net.state != FPR_STATE_INITIALIZED) {
+    /* Quiesce gate: fpr_network_deinit flips state to UNINITIALIZED
+     * before emptying the maps — a callback still in flight from before
+     * esp_now_deinit must not repopulate what teardown just cleared.
+     * Every other state (INITIALIZED/STARTED/PAUSED/STOPPED) keeps the
+     * maps live and may add peers. */
+    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
         _peers_unlock();
         return ESP_ERR_INVALID_STATE;
     }
@@ -227,6 +229,7 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
     store->response_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
     if (!store->response_queue) {
         _peer_store_free_or_defer(store);
+        _peers_unlock();
         return ESP_ERR_NO_MEM;
     }
     

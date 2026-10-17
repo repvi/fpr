@@ -171,6 +171,13 @@ void _handle_client_discovery(const esp_now_recv_info_t *esp_now_info, const uin
      * against remove/clear on other tasks. Recursive: discovery_cb and
      * data_callback below may re-enter peer APIs on this same task. */
     _peers_lock();
+    /* Re-check the quiesce flag inside the lock: deinit flips state to
+     * UNINITIALIZED before draining — a callback dispatched just before
+     * unregister may only reach the lock now and must not touch maps. */
+    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
+        _peers_unlock();
+        return;
+    }
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
         FPR_STORE_HASH_TYPE *known_host = _get_peer_from_map(esp_now_info->src_addr);
@@ -370,9 +377,13 @@ esp_err_t fpr_client_get_host_info(uint8_t *mac_out, char *name_out, size_t name
 esp_err_t fpr_client_set_config(const fpr_client_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
-    
+
+    /* Whole-struct copy under the lock — rx callbacks read these fields
+     * (connection_mode, callbacks) while holding it. */
+    _peers_lock();
     fpr_net.client_config = *config;
-    ESP_LOGI(TAG, "Client config updated: mode=%s", 
+    _peers_unlock();
+    ESP_LOGI(TAG, "Client config updated: mode=%s",
              config->connection_mode == FPR_CONNECTION_AUTO ? "AUTO" : "MANUAL");
     return ESP_OK;
 }
@@ -524,7 +535,7 @@ void _fpr_client_reconnect_task(void *arg)
     (void)arg;
     TickType_t last_keep = xTaskGetTickCount();
 
-    while (1) {
+    while (!fpr_net.reconnect_stop_requested) {
         // Get power-adjusted intervals
         const TickType_t keep_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_KEEPALIVE_INTERVAL_MS));
         const TickType_t check_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_CLIENT_WAIT_CHECK_INTERVAL_MS));
@@ -571,4 +582,5 @@ void _fpr_client_reconnect_task(void *arg)
 
         vTaskDelay(check_interval_ticks);
     }
+    _fpr_task_exit(&fpr_net.reconnect_task);
 }

@@ -312,6 +312,12 @@ void _handle_host_receive(const esp_now_recv_info_t *esp_now_info, const uint8_t
          * freed by remove/clear on other tasks. Recursive lock: request_cb
          * below may call fpr_host_approve_peer on this same task. */
         _peers_lock();
+        /* Re-check quiesce inside the lock — deinit flips state before
+         * draining callbacks. */
+        if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
+            _peers_unlock();
+            return;
+        }
         FPR_STORE_HASH_TYPE *existing = _get_peer_from_map(esp_now_info->src_addr);
 
         // Only treat as connection request if:
@@ -462,7 +468,7 @@ void _fpr_host_reconnect_task(void *arg)
     (void)arg;
     TickType_t last_keep = xTaskGetTickCount();
 
-    while (1) {
+    while (!fpr_net.reconnect_stop_requested) {
         // Get power-adjusted intervals
         const TickType_t keep_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_KEEPALIVE_INTERVAL_MS));
         const TickType_t check_interval_ticks = pdMS_TO_TICKS(_fpr_get_power_adjusted_interval(FPR_HOST_SCAN_POLL_INTERVAL_MS));
@@ -477,15 +483,20 @@ void _fpr_host_reconnect_task(void *arg)
 
         vTaskDelay(check_interval_ticks);
     }
+    _fpr_task_exit(&fpr_net.reconnect_task);
 }
 
 esp_err_t fpr_host_set_config(const fpr_host_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
-    
+
+    /* Whole-struct copy under the lock — rx callbacks read these fields
+     * (connection_mode, request_cb) while holding it. */
+    _peers_lock();
     fpr_net.host_config = *config;
-    ESP_LOGI(TAG, "Host config updated: max_peers=%d, mode=%s", 
-             config->max_peers, 
+    _peers_unlock();
+    ESP_LOGI(TAG, "Host config updated: max_peers=%d, mode=%s",
+             config->max_peers,
              config->connection_mode == FPR_CONNECTION_AUTO ? "AUTO" : "MANUAL");
     return ESP_OK;
 }

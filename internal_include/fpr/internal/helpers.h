@@ -128,6 +128,11 @@ static inline void _peer_store_free_or_defer(FPR_STORE_HASH_TYPE *peer)
     heap_caps_free(peer);
 }
 
+/* Cooperative task stop/exit shared by the task bodies in fpr.c,
+ * fpr_client.c and fpr_host.c — see the implementations in fpr.c. */
+void _fpr_stop_task(TaskHandle_t *handle, volatile bool *stop_flag);
+void _fpr_task_exit(TaskHandle_t *slot);
+
 /* Acquire a temporary reference on the store for `mac`. The reference
  * keeps the store (and its response queue) alive after _peers_unlock(),
  * so a caller may block on the queue without holding the peers lock —

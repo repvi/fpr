@@ -158,6 +158,13 @@ typedef struct {
     bool host_pwk_valid;              // Host PWK has been generated
     TaskHandle_t loop_task;
     TaskHandle_t reconnect_task;
+    /* Cooperative task shutdown: each task polls its flag once per poll
+     * interval and self-deletes after clearing its own handle slot.
+     * Stop paths set the flag and join on the handle going NULL instead
+     * of vTaskDelete — a task killed while holding peers_lock strands
+     * the recursive mutex for every later caller. */
+    volatile bool loop_stop_requested;
+    volatile bool reconnect_stop_requested;
     fpr_network_state_t state;        // Current network state
     bool paused;                      // Paused flag
     

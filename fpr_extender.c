@@ -112,10 +112,10 @@ void _handle_extender_receive(const esp_now_recv_info_t *esp_now_info, const uin
     // other tasks (peer stores are heap-owned by the map). The sender is a
     // direct neighbor: its distance is always 1 hop.
     _peers_lock();
-    /* Quiesced teardown: deinit flips state before emptying the maps —
-     * a callback still in flight from before esp_now_deinit must not
-     * repopulate peers or learn new routes. */
-    if (fpr_net.state != FPR_STATE_INITIALIZED) {
+    /* Quiesced teardown: deinit flips state to UNINITIALIZED before
+     * emptying the maps — a callback still in flight from before
+     * esp_now_deinit must not repopulate peers or learn new routes. */
+    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
         _peers_unlock();
         return;
     }

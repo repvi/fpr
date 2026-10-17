@@ -9,9 +9,9 @@
  * @date December 2025
  */
 
-#include "fpr/fpr_handle.h"
-#include "fpr/fpr_legacy.h"
-#include "fpr/fpr_new.h"
+#include "fpr/internal/fpr_handle.h"
+#include "fpr/internal/fpr_legacy.h"
+#include "fpr/internal/fpr_new.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include <inttypes.h>

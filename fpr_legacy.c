@@ -8,7 +8,7 @@
  * @version 1.0.0
  * @date December 2025
  */
-#include "fpr/fpr_legacy.h"
+#include "fpr/internal/fpr_legacy.h"
 #include "fpr/fpr_lts.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -22,14 +22,9 @@ static const char *TAG = "fpr_legacy";
 
 bool fpr_legacy_is_v0_packet(const uint8_t *data, int len)
 {
-    if (data == NULL || len < (int)sizeof(uint32_t)) {
-        return false;
-    }
-    
-    // V0 packets have version field as 0 (or uninitialized)
-    // The version field location depends on your packet structure
-    // For now, assume it's detectable by the version being 0
-    return true;  // Caller should check version field directly
+    /* v0 packets predate the version field entirely; the best we can do
+     * is a minimum-size sniff. Callers must still check the version. */
+    return (data != NULL && len >= FPR_V0_MIN_PACKET_SIZE);
 }
 
 bool fpr_legacy_handle_protocol_v0(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)

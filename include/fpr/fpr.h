@@ -37,14 +37,11 @@
 #pragma once
 
 #include "fpr/fpr_def.h"
-#include "lib/version_control.h"
+#include "fpr/fpr_version.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "stdint.h"
 #include "esp_err.h"
-
-#define FPR_PACKAGE_INIT 0
-#define FPR_PACKAGE_DATA 1
 
 #ifdef __cplusplus
 extern "C" {

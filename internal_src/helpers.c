@@ -291,6 +291,6 @@ void _copy_peer_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
     info->state = peer->state;
     info->hop_count = peer->hop_count;
     info->rssi = peer->rssi;
-    info->last_seen_ms = (uint64_t)US_TO_MS(esp_timer_get_time() - peer->last_seen);
+    info->last_seen_ms = (uint64_t)FPR_US_TO_MS(esp_timer_get_time() - peer->last_seen);
     info->packets_received = peer->packets_received;
 }

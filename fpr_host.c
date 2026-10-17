@@ -9,17 +9,14 @@
  * @date December 2025S
  */
 
-#include "fpr/fpr_host.h"
+#include "fpr/fpr.h"
+#include "fpr/internal/rx.h"
 #include "fpr/fpr_security.h"
-#include "fpr/fpr_security_handshake.h"
+#include "fpr/internal/fpr_security_handshake.h"
 #include "esp_log.h"
 #include "esp_check.h"
 
 static const char *TAG = "fpr_host";
-
-extern esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
-extern fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
-extern esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
 
 static void _count_connected_callback(void *key, void *value, void *user_data)
 {
@@ -448,7 +445,7 @@ static void _host_reconnect_and_keepalive_cb(void *key, void *value, void *user_
 
     if (peer->state == FPR_PEER_STATE_CONNECTED) {
         int64_t age_us = esp_timer_get_time() - peer->last_seen;
-        uint64_t age_ms = (uint64_t)US_TO_MS(age_us);
+        uint64_t age_ms = (uint64_t)FPR_US_TO_MS(age_us);
         if (age_ms > FPR_RECONNECT_TIMEOUT_MS) {
             ESP_LOGW(TAG, "Client " MACSTR " timed out (age %llu ms) - disconnecting", MAC2STR(peer->peer_info.peer_addr), age_ms);
             _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);

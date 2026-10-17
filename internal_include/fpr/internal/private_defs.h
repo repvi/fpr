@@ -14,11 +14,11 @@
  * @date December 2024
  */
 
-#include "fpr/fpr_handle.h"
+#include "fpr/internal/fpr_handle.h"
 #include "fpr/fpr_def.h"
 #include "fpr/fpr_config.h"
 #include "fpr/fpr_security.h"
-#include "lib/version_control.h"
+#include "fpr/fpr_version.h"
 #include "lib/hashmap.h"
 #include "lib/hashmap_presets.h"
 #include "lib/base_macros.h"
@@ -29,8 +29,10 @@
 #include "esp_mac.h"
 #include <string.h>
 
-#define MAC_ADDRESS_LENGTH 6
 #define FPR_CONNECT_NAME_SIZE 32
+
+/* Local conversion so fpr does not depend on the host app's time header. */
+#define FPR_US_TO_MS(us) ((us) / 1000LL)
 
 #define FPR_DEFAULT_MAX_HOPS 10
 
@@ -130,8 +132,6 @@ typedef struct {
     char name[PEER_NAME_MAX_LENGTH];
     uint8_t mac[MAC_ADDRESS_LENGTH];
     fpr_visibility_t access_state;
-    esp_now_send_cb_t sender;
-    esp_now_recv_cb_t receiver;
     fpr_mode_type_t current_mode;
     bool routing_enabled;       // Enable mesh routing/forwarding
     

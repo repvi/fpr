@@ -30,35 +30,26 @@
  * @since August 2025
  */
 
-#include "fpr/internal/helpers.h"
 #include "fpr/fpr.h"
-#include "fpr/internal/private_defs.h"
-#include "fpr/fpr_config.h"
+#include "fpr/internal/helpers.h"
+#include "fpr/internal/rx.h"
 #include "fpr/fpr_lts.h"
-#include "fpr/fpr_legacy.h" // for legacy packet handling
-#include "fpr/fpr_handle.h"  // for version handling
-#include "fpr/fpr_client.h"
-#include "fpr/fpr_extender.h"
-#include "fpr/fpr_host.h"
-#include "standard/time.h"
+#include "fpr/fpr_config.h"
+#include <inttypes.h>
+#include <stdio.h>
+#include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "string.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
 #include "esp_log.h"
-#include "esp_event.h"
-#include "esp_system.h"
 #include "esp_mac.h"
 #include "esp_check.h"
-#include "esp_random.h"
 #include "esp_heap_caps.h"
-#include "lib/version_control.h"
 
 // Protocol configuration
 #define FPR_HASHMAP_INITIAL_SIZE 32
-#define FPR_CONNECT_NAME_SIZE 32
 /* Drain window in fpr_network_deinit for ESP-NOW RX callbacks that
  * were already dispatched when the recv cb was unregistered — they
  * run on the wifi task, which outranks every deinit caller, so this
@@ -372,9 +363,7 @@ esp_err_t fpr_network_start()
     ESP_RETURN_ON_FALSE(mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA, ESP_ERR_INVALID_STATE, TAG, "WiFi is not started or in STA/APSTA mode");
     ESP_RETURN_ON_ERROR(esp_now_register_send_cb(_handle_default_send_complete), TAG, "Failed to register send callback");
     ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(_handle_client_discovery), TAG, "Failed to register receive callback");
-    
-    fpr_net.sender = _handle_default_send_complete;
-    fpr_net.receiver = _handle_client_discovery;
+
     fpr_network_set_mode(FPR_MODE_CLIENT);
 
     _peers_lock();
@@ -406,13 +395,11 @@ static esp_err_t fpr_network_override_protocol(esp_now_send_cb_t sender, esp_now
     if (sender) {
         ESP_RETURN_ON_ERROR(esp_now_unregister_send_cb(), TAG, "Failed to unregister send callback");
         ESP_RETURN_ON_ERROR(esp_now_register_send_cb(sender), TAG, "Failed to register send callback");
-        fpr_net.sender = sender;
     }
-    
+
     if (receiver) {
         ESP_RETURN_ON_ERROR(esp_now_unregister_recv_cb(), TAG, "Failed to unregister receive callback");
         ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(receiver), TAG, "Failed to register receive callback");
-        fpr_net.receiver = receiver;
     }
     
     return ESP_OK;
@@ -454,7 +441,9 @@ static void _fpr_handle_host_loop(void *arg)
 void fpr_network_set_mode(fpr_mode_type_t mode)
 {
     fpr_net.current_mode = mode;
-    
+    /* Mesh forwarding only runs in extender mode. */
+    fpr_net.routing_enabled = (mode == FPR_MODE_EXTENDER);
+
     // Add broadcast peer for host and client modes (required for broadcasts)
     if (mode == FPR_MODE_CLIENT) {
         _add_broadcast_peer("client");
@@ -916,7 +905,7 @@ static void _cleanup_stale_routes_callback(void *key, void *value, void *user_da
 
     if (peer) {
         int64_t age = esp_timer_get_time() - peer->last_seen;
-        uint64_t age_ms = (uint64_t)US_TO_MS(age);
+        uint64_t age_ms = (uint64_t)FPR_US_TO_MS(age);
         if (age_ms > ctx->stale_timeout_ms) {
             ESP_LOGI(TAG, "Removing stale route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
@@ -934,7 +923,7 @@ static void _cleanup_stale_route_entry(void *key, void *value, void *user_data)
 
     if (route) {
         int64_t age = esp_timer_get_time() - route->last_seen;
-        uint64_t age_ms = (uint64_t)US_TO_MS(age);
+        uint64_t age_ms = (uint64_t)FPR_US_TO_MS(age);
         if (age_ms > ctx->stale_timeout_ms) {
             ESP_LOGI(TAG, "Removing stale extender route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
@@ -1370,7 +1359,7 @@ bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms)
     // Check if peer was recently seen (within timeout)
     int64_t now_us = esp_timer_get_time();
     int64_t age_us = now_us - peer->last_seen;
-    uint64_t age_ms = (uint64_t)US_TO_MS(age_us);
+    uint64_t age_ms = (uint64_t)FPR_US_TO_MS(age_us);
     int64_t initial_last_seen = peer->last_seen;
     _peers_unlock();
 

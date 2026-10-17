@@ -9,9 +9,10 @@
  * @date December 2025S
  */
 
-#include "fpr/fpr_client.h"
+#include "fpr/fpr.h"
+#include "fpr/internal/rx.h"
 #include "fpr/fpr_security.h"
-#include "fpr/fpr_security_handshake.h"
+#include "fpr/internal/fpr_security_handshake.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -32,10 +33,6 @@ typedef struct {
 } peer_filter_ctx_t;
 
 static const char *TAG = "fpr_client";
-
-extern esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
-extern fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
-extern esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
 
 static void _check_connected_callback(void *key, void *value, void *user_data)
 {
@@ -514,7 +511,6 @@ size_t fpr_client_scan_for_hosts(TickType_t duration)
     while (xTaskGetTickCount() - start < duration) {
         TickType_t now = xTaskGetTickCount();
         if (now - last_broadcast >= broadcast_interval) {
-            extern esp_err_t fpr_network_broadcast_device_info();
             fpr_network_broadcast_device_info();
             last_broadcast = now;
         }
@@ -558,8 +554,8 @@ void _fpr_client_reconnect_task(void *arg)
                 // check last seen timestamp (in microseconds)
                 int64_t age_us = esp_timer_get_time() - host_peer->last_seen;
                 uint32_t timeout_ms = _fpr_get_power_adjusted_interval(FPR_RECONNECT_TIMEOUT_MS);
-                if ((uint64_t)US_TO_MS(age_us) > timeout_ms) {
-                    ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)US_TO_MS(age_us));
+                if ((uint64_t)FPR_US_TO_MS(age_us) > timeout_ms) {
+                    ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)FPR_US_TO_MS(age_us));
                     _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
             } else if (host_peer && !host_peer->is_connected &&
@@ -571,7 +567,7 @@ void _fpr_client_reconnect_task(void *arg)
                 // in LWK_SENT forever.
                 int64_t age_us = esp_timer_get_time() - host_peer->last_seen;
                 uint32_t timeout_ms = _fpr_get_power_adjusted_interval(FPR_RECONNECT_TIMEOUT_MS);
-                if ((uint64_t)US_TO_MS(age_us) > timeout_ms) {
+                if ((uint64_t)FPR_US_TO_MS(age_us) > timeout_ms) {
                     ESP_LOGW(TAG, "Handshake with host stalled in state %d - resetting",
                              host_peer->sec_state);
                     _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);

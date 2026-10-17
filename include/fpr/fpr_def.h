@@ -13,7 +13,8 @@
  */
 
 #include <stdint.h>
-#include "standard/time.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 #define MAC_ADDRESS_LENGTH 6
 #define PEER_NAME_MAX_LENGTH 32

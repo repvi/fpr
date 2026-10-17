@@ -26,11 +26,17 @@ if(CONFIG_FPR_TEST_DATA_SIZES)
     list(APPEND FPR_SOURCES "test/test_fpr_data_sizes.c")
 endif()
 
+if(CONFIG_FPR_TEST_MODE OR CONFIG_FPR_TEST_DATA_SIZES)
+    set(FPR_TEST_INCLUDE_DIRS "test")
+else()
+    set(FPR_TEST_INCLUDE_DIRS "")
+endif()
+
 idf_component_register(
     SRCS ${FPR_SOURCES}
     INCLUDE_DIRS
         "include"
-        "test"
+        ${FPR_TEST_INCLUDE_DIRS}
     PRIV_INCLUDE_DIRS
         "internal_include"
 

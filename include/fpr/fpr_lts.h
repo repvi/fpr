@@ -28,7 +28,7 @@
  * - Extender mode is under active development for version 1.1.0
  */
 
-#include "lib/version_control.h"
+#include "fpr/fpr_version.h"
 #include "esp_now.h"
 #include <stdbool.h>
 #include <stddef.h>

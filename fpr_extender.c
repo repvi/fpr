@@ -11,7 +11,8 @@
  * @date December 2025
  */
 
-#include "fpr/fpr_extender.h"
+#include "fpr/fpr.h"
+#include "fpr/internal/rx.h"
 #include "esp_log.h"
 #include "esp_check.h"
 

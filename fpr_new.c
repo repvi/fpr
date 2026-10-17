@@ -9,7 +9,7 @@
  * @date December 2025
  */
 
-#include "fpr/fpr_new.h"
+#include "fpr/internal/fpr_new.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include <inttypes.h>

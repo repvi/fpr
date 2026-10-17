@@ -187,5 +187,14 @@ esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected
 
 esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, uint32_t key, bool is_connected);
 
+/* Remove a peer from peers_map and the esp_now peer table. */
+esp_err_t _peer_remove(const uint8_t *peer_mac);
+/* Free every store in peers_map (map itself is cleared by the caller). */
+void _reset_all_peers(void);
+/* hashmap_foreach callback freeing route-table entries. */
+void _route_free_cb(void *key, void *value, void *user_data);
+/* Decrement a store's queued_packets under peers_lock. */
+void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer);
+
 void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info);
 fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);

@@ -13,6 +13,7 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_now.h"
 
 static const char *TAG = "fpr_helpers";
 
@@ -293,4 +294,61 @@ void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
     info->rssi = peer->rssi;
     info->last_seen_ms = (uint64_t)FPR_US_TO_MS(esp_timer_get_time() - peer->last_seen);
     info->packets_received = peer->packets_received;
+}
+// ========== PEER STORE / MAP OPERATIONS ==========
+
+/* queued_packets is written by the rx path under peers_lock; the
+ * blocking reader holds only a store reference, so the decrement
+ * must take the lock too or the counter desyncs from the real queue. */
+void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer)
+{
+    _peers_lock();
+    if (peer->queued_packets > 0) {
+        peer->queued_packets--;
+    }
+    _peers_unlock();
+}
+
+esp_err_t _peer_remove(const uint8_t *peer_mac)
+{
+    ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
+    _peers_lock();
+    /* The map key may point inside the store we are about to release. */
+    uint8_t mac[MAC_ADDRESS_LENGTH];
+    memcpy(mac, peer_mac, sizeof(mac));
+    FPR_STORE_HASH_TYPE *var = _peer_from_map(mac);
+    esp_err_t result;
+    if (var != NULL) {
+        if (!hashmap_remove(&fpr_net.peers_map, mac)) {
+            _peers_unlock();
+            return ESP_FAIL;
+        }
+        _peer_store_free_or_defer(var);
+    }
+    result = esp_now_del_peer(mac);
+    _peers_unlock();
+    return result;
+}
+
+static void _peer_cleanup_cb(void *key, void *value, void *user_data)
+{
+    (void)key;
+    (void)user_data;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    if (peer) {
+        esp_now_del_peer(peer->peer_info.peer_addr);
+        _peer_store_free_or_defer(peer);
+    }
+}
+
+void _reset_all_peers(void)
+{
+    hashmap_foreach(&fpr_net.peers_map, _peer_cleanup_cb, NULL);
+}
+
+void _route_free_cb(void *key, void *value, void *user_data)
+{
+    (void)key;
+    (void)user_data;
+    heap_caps_free(value);
 }

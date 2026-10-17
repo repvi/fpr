@@ -201,6 +201,13 @@ esp_err_t _add_peer_internal(uint8_t *peer_mac, const char *name, bool is_connec
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock();
+    /* Quiesce gate: fpr_network_deinit flips state before emptying the
+     * maps — a callback still in flight from before esp_now_deinit
+     * must not repopulate what teardown just cleared. */
+    if (fpr_net.state != FPR_STATE_INITIALIZED) {
+        _peers_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
     /* hashmap_put replaces values but keeps the original key pointer.
      * Replacing an owned store would leak it and its response queue. */
     if (_get_peer_from_map(peer_mac) != NULL) {

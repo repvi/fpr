@@ -59,6 +59,11 @@
 // Protocol configuration
 #define FPR_HASHMAP_INITIAL_SIZE 32
 #define FPR_CONNECT_NAME_SIZE 32
+/* Drain window in fpr_network_deinit for ESP-NOW RX callbacks that
+ * were already dispatched when the recv cb was unregistered — they
+ * run on the wifi task, which outranks every deinit caller, so this
+ * only has to cover a few scheduling opportunities. */
+#define FPR_DEINIT_SETTLE_MS 50
 
 // Use version definitions from fpr_lts.h
 #define FPR_NETWORK_VERSION FPR_PROTOCOL_VERSION
@@ -236,9 +241,10 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
 // update the function
 esp_err_t fpr_network_deinit(void)
 {
-    /* Stop the radio before freeing peer state. IDF does not document
-     * whether deinit drains callbacks already in flight; this ordering
-     * alone is not a synchronization barrier for concurrent readers. */
+    /* Drop the recv callback BEFORE tearing down: nothing new is
+     * dispatched on the wifi task after this point, so only callbacks
+     * already in flight remain below. */
+    esp_now_unregister_recv_cb();
     esp_err_t esp_now_result = esp_now_deinit();
 
     // Stop reconnect task if running
@@ -253,11 +259,25 @@ esp_err_t fpr_network_deinit(void)
         fpr_net.loop_task = NULL;
     }
 
-    /* Clean up peers and hashmap BEFORE memset. esp_now_del_peer() in
-     * _cleanup_peer_entry now returns NOT_INIT — harmless; ESP-NOW is
-     * already down and the peer entries are being torn down anyway.
-     * Take the lock so a still-running reader finishes first (tasks are
-     * dead but an in-flight app call may not be). */
+    /* Quiesce flag first: any callback still in flight takes the lock,
+     * sees UNINITIALIZED, and the gated write paths (_add_peer_internal,
+     * extender route learning) bail instead of repopulating the maps
+     * this teardown is about to free. */
+    _peers_lock();
+    fpr_net.state = FPR_STATE_UNINITIALIZED;
+    _peers_unlock();
+
+    /* Drain the callbacks dispatched before the unregister: they finish
+     * on the still-valid lock + maps (writes gated by the flag; reads
+     * still see valid entries). The wifi task outranks every deinit
+     * caller, so a modest delay guarantees it got scheduled. */
+    vTaskDelay(pdMS_TO_TICKS(FPR_DEINIT_SETTLE_MS));
+
+    /* Now free under the lock. A pathological straggler that still
+     * wakes late re-locks a LIVE mutex and reads maps that
+     * hashmap_free leaves in a safe empty state — every map op is a
+     * no-op returning NULL on NULL buckets — and each deinit pass
+     * below restores exactly that state for the next cycle. */
     _peers_lock();
     _reset_all_peers();
     hashmap_free(&fpr_net.peers_map);

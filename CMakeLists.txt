@@ -17,6 +17,13 @@ set(FPR_SOURCES
     "internal_src/rx.c"
 )
 
+# SIL test-support probe: lets the sim component's virtual ESP-NOW
+# radio build/parse wire-format packets without exporting the private
+# fpr_package_t layout. See include/fpr/fpr_sil.h.
+if(CONFIG_RAMINOX_SIL)
+    list(APPEND FPR_SOURCES "sil_probe.c")
+endif()
+
 if(CONFIG_FPR_TEST_MODE)
     # Test helpers (built into fpr component so main can call them)
     list(APPEND FPR_SOURCES

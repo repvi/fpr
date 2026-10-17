@@ -267,54 +267,23 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
              len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
     #endif
     
-    // Check if network is paused
-    if (fpr_net.paused) {
-        return;  // Drop all packets when paused
-    }
-    
-    if (!is_fpr_package_compatible(len)) {
-        ESP_LOGW(TAG, "Packet size mismatch - expected: %d, got: %d", sizeof(fpr_package_t), len);
+    /* paused/size/version gates, control sanitize, peers_lock + quiesce
+     * re-check — shared preamble, returns with the lock held. */
+    fpr_rx_ctx_t ctx;
+    if (!_rx_begin(esp_now_info, data, len, false, &ctx)) {
         return;
     }
-    
-    const fpr_package_t *package = (const fpr_package_t *)data;
-    
-    // Version handling (using fpr_handle.h)
-    if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {
-        return; // Version handler rejected the packet
-    }
-    
-    bool is_broadcast = is_broadcast_address(esp_now_info->des_addr);
-    
+    const fpr_package_t *package = ctx.package;
+    const fpr_connect_t *info = &ctx.control;
+    bool is_control_packet = ctx.is_control;
+    bool is_broadcast = ctx.is_broadcast;
+
     #if (FPR_DEBUG == 1)
     ESP_LOGI(TAG, "Packet is %s, package_type: %d, id: %d", is_broadcast ? "BROADCAST" : "UNICAST", package->package_type, package->id);
     #endif
-    
-    // Connection/handshake packets use FPR_PACKET_ID_CONTROL (-1)
-    // Application data packets use other IDs (0 or positive)
-    bool is_control_packet = (package->id == FPR_PACKET_ID_CONTROL);
-    
-    /* Sanitize a local control message, never the driver-owned packet:
-     * the same union holds application bytes for non-control packets. */
-    fpr_connect_t control_info = {0};
-    if (is_control_packet) {
-        memcpy(&control_info, &package->protocol.connect_info, sizeof(control_info));
-        control_info.name[FPR_CONNECT_NAME_SIZE - 1] = '\0';
-    }
-    const fpr_connect_t *info = &control_info;
 
     // Handle unicast messages from clients (connection requests)
     if (!is_broadcast) {
-        /* Serialize the whole get/use/handshake region — peer stores are
-         * freed by remove/clear on other tasks. Recursive lock: request_cb
-         * below may call fpr_host_approve_peer on this same task. */
-        _peers_lock();
-        /* Re-check quiesce inside the lock — deinit flips state before
-         * draining callbacks. */
-        if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
-            _peers_unlock();
-            return;
-        }
         FPR_STORE_HASH_TYPE *existing = _peer_from_map(esp_now_info->src_addr);
 
         // Only treat as connection request if:
@@ -361,8 +330,8 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
                      package->id, MAC2STR(esp_now_info->src_addr));
             #endif
         }
-        _peers_unlock();
     }
+    _peers_unlock();
 }
 
 esp_err_t fpr_host_block_peer(const uint8_t *peer_mac)

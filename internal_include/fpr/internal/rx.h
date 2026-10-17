@@ -15,6 +15,28 @@
 extern "C" {
 #endif
 
+/* Result of the shared RX preamble: the parsed packet plus the sanitized
+ * control payload. `control` is zeroed for non-control packets; its name
+ * field is always NUL-terminated. */
+typedef struct {
+    const fpr_package_t *package;
+    fpr_connect_t control;
+    bool is_control;   /* package->id == FPR_PACKET_ID_CONTROL */
+    bool is_broadcast; /* 802.11 destination is the broadcast MAC */
+} fpr_rx_ctx_t;
+
+/* Shared RX preamble used by every mode handler: paused/size/version
+ * gates, sanitized control copy, broadcast detect, then peers_lock +
+ * quiesce re-check (rejects while state is UNINITIALIZED).
+ *
+ * On true return peers_lock is HELD and ctx is populated — the caller
+ * must _peers_unlock() before returning. On false the packet was
+ * rejected and no lock is held. count_drops charges rejects to
+ * stats.packets_dropped and counts size-valid packets in
+ * stats.packets_received (extender accounting; other modes pass false). */
+bool _rx_begin(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len,
+               bool count_drops, fpr_rx_ctx_t *ctx);
+
 /** Client-mode receive handler: host discovery, handshake, data. */
 void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
 

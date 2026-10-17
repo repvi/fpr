@@ -14,6 +14,7 @@ set(FPR_SOURCES
     "fpr_diag.c"
 
     "internal_src/helpers.c"
+    "internal_src/rx.c"
 )
 
 if(CONFIG_FPR_TEST_MODE)

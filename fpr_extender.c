@@ -81,40 +81,22 @@ void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
              len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
     #endif
     
-    // Check if network is paused
-    if (fpr_net.paused) {
-        fpr_net.stats.packets_dropped++;
-        return;  // Drop all packets when paused
-    }
-    
-    if (!is_fpr_package_compatible(len)) {
-        fpr_net.stats.packets_dropped++;
+    /* paused/size/version gates, control sanitize, peers_lock + quiesce
+     * re-check — shared preamble, returns with the lock held. Extender
+     * accounting (count_drops) charges rejects to packets_dropped and
+     * counts size-valid packets in packets_received. */
+    fpr_rx_ctx_t ctx;
+    if (!_rx_begin(esp_now_info, data, len, true, &ctx)) {
         return;
     }
-    
-    fpr_net.stats.packets_received++;
     /* Forwarding adjusts hop metadata, not the driver-owned RX buffer. */
     fpr_package_t received;
     memcpy(&received, data, sizeof(received));
     fpr_package_t *package = &received;
-    
-    // Version handling (using fpr_handle.h)
-    if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {
-        fpr_net.stats.packets_dropped++;
-        return; // Version handler rejected the packet
-    }
-    
+
     // Update or add peer liveness info — serialize against remove/clear on
     // other tasks (peer stores are heap-owned by the map). The sender is a
     // direct neighbor: its distance is always 1 hop.
-    _peers_lock();
-    /* Quiesced teardown: deinit flips state to UNINITIALIZED before
-     * emptying the maps — a callback still in flight from before
-     * esp_now_deinit must not repopulate peers or learn new routes. */
-    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
-        _peers_unlock();
-        return;
-    }
     FPR_STORE_HASH_TYPE *peer = _peer_from_map(esp_now_info->src_addr);
     if (peer) {
         _peer_touch(peer, esp_now_info);

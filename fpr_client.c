@@ -133,48 +133,18 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
              len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
     #endif
     
-    // Check if network is paused
-    if (fpr_net.paused) {
-        return;  // Drop all packets when paused
-    }
-    
-    if (!is_fpr_package_compatible(len)) {
+    /* paused/size/version gates, control sanitize, peers_lock + quiesce
+     * re-check — shared preamble, returns with the lock held. */
+    fpr_rx_ctx_t ctx;
+    if (!_rx_begin(esp_now_info, data, len, false, &ctx)) {
         return;
     }
-    
-    const fpr_package_t *package = (const fpr_package_t *)data;
-    
-    // Version handling (using fpr_handle.h)
-    if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {
-        return; // Version handler rejected the packet
-    }
-    
-    // Connection/handshake packets use FPR_PACKET_ID_CONTROL (-1)
-    // Application data packets use other IDs (0 or positive)
-    bool is_control_packet = (package->id == FPR_PACKET_ID_CONTROL);
-    
-    /* Sanitize a local control message, never the driver-owned packet:
-     * the same union holds application bytes for non-control packets. */
-    fpr_connect_t control_info = {0};
-    if (is_control_packet) {
-        memcpy(&control_info, &package->protocol.connect_info, sizeof(control_info));
-        control_info.name[FPR_CONNECT_NAME_SIZE - 1] = '\0';
-    }
-    const fpr_connect_t *info = &control_info;
-    bool is_broadcast = is_broadcast_address(esp_now_info->des_addr);
-    
+    const fpr_package_t *package = ctx.package;
+    const fpr_connect_t *info = &ctx.control;
+    bool is_control_packet = ctx.is_control;
+    bool is_broadcast = ctx.is_broadcast;
+
     // Handle broadcast discovery messages from host (always control packets)
-    /* Serialize the whole peer-map region (get/add/handshake/data store)
-     * against remove/clear on other tasks. Recursive: discovery_cb and
-     * data_callback below may re-enter peer APIs on this same task. */
-    _peers_lock();
-    /* Re-check the quiesce flag inside the lock: deinit flips state to
-     * UNINITIALIZED before draining — a callback dispatched just before
-     * unregister may only reach the lock now and must not touch maps. */
-    if (fpr_net.state == FPR_STATE_UNINITIALIZED) {
-        _peers_unlock();
-        return;
-    }
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
         FPR_STORE_HASH_TYPE *known_host = _peer_from_map(esp_now_info->src_addr);

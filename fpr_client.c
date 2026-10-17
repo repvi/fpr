@@ -58,9 +58,13 @@ bool fpr_client_is_connected(void)
 
 static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info) 
 {    
+    /* rx_ctrl is driver-provided but not documented as always non-NULL —
+     * report RSSI 0 ("unknown") when it is absent, like _peer_touch. */
+    const int8_t rssi = esp_now_info->rx_ctrl ? esp_now_info->rx_ctrl->rssi : 0;
+
     // Invoke discovery callback if registered
     if (fpr_net.client_config.discovery_cb) {
-        fpr_net.client_config.discovery_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+        fpr_net.client_config.discovery_cb(esp_now_info->src_addr, info->name, rssi);
     }
 
     // Check if we're already connected to a DIFFERENT host
@@ -77,7 +81,7 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
     // treat it as an explicit "decline" and do not auto-connect.
     if (fpr_net.client_config.connection_mode == FPR_CONNECTION_MANUAL) {
         if (fpr_net.client_config.selection_cb != NULL) {
-            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, esp_now_info->rx_ctrl->rssi);
+            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, rssi);
             if (!should_connect) {
                 #if (FPR_DEBUG == 1)
                 ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);

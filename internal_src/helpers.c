@@ -198,7 +198,7 @@ void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package
     _peers_unlock();
 }
 
-esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key)
+esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock();
@@ -277,10 +277,10 @@ esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected
 }
 
 // used by multiple modes
-esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, uint32_t key, bool is_connected) 
+esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, bool is_connected)
 {
     ESP_RETURN_ON_FALSE(name != NULL && address != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
-    return _peer_add(address, name, is_connected, key);
+    return _peer_add(address, name, is_connected);
 }
 
 // Helper: Copy peer data to info structure
@@ -296,18 +296,6 @@ void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
     info->packets_received = peer->packets_received;
 }
 // ========== PEER STORE / MAP OPERATIONS ==========
-
-/* queued_packets is written by the rx path under peers_lock; the
- * blocking reader holds only a store reference, so the decrement
- * must take the lock too or the counter desyncs from the real queue. */
-void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer)
-{
-    _peers_lock();
-    if (peer->queued_packets > 0) {
-        peer->queued_packets--;
-    }
-    _peers_unlock();
-}
 
 esp_err_t _peer_remove(const uint8_t *peer_mac)
 {
@@ -330,25 +318,24 @@ esp_err_t _peer_remove(const uint8_t *peer_mac)
     return result;
 }
 
-static void _peer_cleanup_cb(void *key, void *value, void *user_data)
-{
-    (void)key;
-    (void)user_data;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
-    if (peer) {
-        esp_now_del_peer(peer->peer_info.peer_addr);
-        _peer_store_free_or_defer(peer);
-    }
-}
-
-void _reset_all_peers(void)
-{
-    hashmap_foreach(&fpr_net.peers_map, _peer_cleanup_cb, NULL);
-}
-
 void _route_free_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     (void)user_data;
     heap_caps_free(value);
+}
+
+void _peer_collect_cb(void *key, void *value, void *user_data)
+{
+    (void)key;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    fpr_peer_collect_ctx_t *ctx = (fpr_peer_collect_ctx_t *)user_data;
+
+    if (peer && ctx->count < ctx->max_peers) {
+        if (ctx->connected_only && peer->state != FPR_PEER_STATE_CONNECTED) {
+            return;
+        }
+        _peer_copy_to_info(peer, &ctx->array[ctx->count]);
+        ctx->count++;
+    }
 }

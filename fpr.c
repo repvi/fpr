@@ -72,7 +72,7 @@ static inline TickType_t _task_stop_grace(void)
  * slot. vTaskDelete remains the fallback for a wedged task — but only
  * after a full grace window, because a task killed while holding
  * peers_lock strands the recursive mutex for every later caller. */
-void _task_stop(TaskHandle_t *handle, volatile bool *stop_flag)
+static void _task_stop(TaskHandle_t *handle, volatile bool *stop_flag)
 {
     if (handle == NULL || *handle == NULL) {
         return;
@@ -226,6 +226,25 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     return ESP_OK;
 }
 
+/* Deinit peer sweep: detach each store from the esp_now peer table and
+ * free it (or mark dead for a live reader to release). Only used by
+ * fpr_network_deinit — kept file-local. */
+static void _peer_cleanup_cb(void *key, void *value, void *user_data)
+{
+    (void)key;
+    (void)user_data;
+    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    if (peer) {
+        esp_now_del_peer(peer->peer_info.peer_addr);
+        _peer_store_free_or_defer(peer);
+    }
+}
+
+static void _reset_all_peers(void)
+{
+    hashmap_foreach(&fpr_net.peers_map, _peer_cleanup_cb, NULL);
+}
+
 esp_err_t fpr_network_deinit(void)
 {
     /* Quiesce gate FIRST — peer adds and extender route learning reject
@@ -300,8 +319,9 @@ esp_err_t fpr_network_start(void)
     ESP_RETURN_ON_ERROR(esp_wifi_get_mode(&mode), TAG, "WiFi is not initialized");
     ESP_RETURN_ON_FALSE(mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA, ESP_ERR_INVALID_STATE, TAG, "WiFi is not started or in STA/APSTA mode");
     ESP_RETURN_ON_ERROR(esp_now_register_send_cb(_tx_done), TAG, "Failed to register send callback");
-    ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(_rx_client), TAG, "Failed to register receive callback");
 
+    /* set_mode installs the mode's receive handler; registering one
+     * here first would only be unregistered again in the same call. */
     fpr_network_set_mode(FPR_MODE_CLIENT);
 
     _peers_lock();
@@ -382,13 +402,22 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
     /* Mesh forwarding only runs in extender mode. */
     fpr_net.routing_enabled = (mode == FPR_MODE_EXTENDER);
 
-    // Add broadcast peer for host and client modes (required for broadcasts)
+    /* Client/host/extender each need the broadcast peer registered and
+     * the mode's RX handler installed. Failures only get logged: the
+     * signature is void, and a missing broadcast peer or a stale RX
+     * handler is diagnosable rather than silently misdispatching. */
     if (mode == FPR_MODE_CLIENT) {
-        _broadcast_peer_add("client");
-        _set_protocol_cbs(NULL, _rx_client);
+        if (_broadcast_peer_add("client") != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for client mode");
+        }
+        if (_set_protocol_cbs(NULL, _rx_client) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to install client RX handler");
+        }
     }
     else if (mode == FPR_MODE_HOST) {
-        _broadcast_peer_add("host");
+        if (_broadcast_peer_add("host") != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for host mode");
+        }
         // Generate host PWK for secure connections — under the lock so
         // rx callbacks never observe a valid flag ahead of the key bytes
         _peers_lock();
@@ -399,11 +428,22 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
             ESP_LOGE(TAG, "Failed to generate PWK for host mode");
         }
         _peers_unlock();
-        _set_protocol_cbs(NULL, _rx_host);
+        if (_set_protocol_cbs(NULL, _rx_host) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to install host RX handler");
+        }
     }
     else if (mode == FPR_MODE_EXTENDER) {
-        _broadcast_peer_add("extender");
-        _set_protocol_cbs(NULL, _rx_extender);
+        if (_broadcast_peer_add("extender") != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for extender mode");
+        }
+        if (_set_protocol_cbs(NULL, _rx_extender) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to install extender RX handler");
+        }
+    }
+    else {
+        /* FPR_MODE_DEFAULT/FPR_MODE_BROADCAST: accepted but have no
+         * handler of their own — the previous mode's RX stays armed. */
+        ESP_LOGW(TAG, "Mode %d has no handler — RX callback unchanged", (int)mode);
     }
 }
 
@@ -464,7 +504,11 @@ bool fpr_network_is_loop_task_running(void)
 
 void fpr_register_receive_callback(fpr_data_receive_cb_t callback)
 {
+    /* Read under peers_lock in the RX store path — publish the pointer
+     * change under the same lock. */
+    _peers_lock();
     fpr_net.data_callback = callback;
+    _peers_unlock();
     if (callback) {
         ESP_LOGI(TAG, "Data receive callback registered");
     } else {
@@ -568,7 +612,9 @@ fpr_network_state_t fpr_network_get_state(void)
 
 void fpr_network_set_power_mode(fpr_power_mode_t mode)
 {
+    _peers_lock();
     fpr_net.power_mode = mode;
+    _peers_unlock();
     ESP_LOGI(TAG, "Power mode set to %s", mode == FPR_POWER_LOW ? "LOW" : "NORMAL");
 }
 
@@ -586,9 +632,26 @@ uint8_t fpr_network_get_channel(void)
 
 void fpr_network_set_queue_mode(fpr_queue_mode_t mode)
 {
+    _peers_lock();
     fpr_net.default_queue_mode = mode;
-    ESP_LOGI(TAG, "Default queue mode set to %s", 
+    _peers_unlock();
+    ESP_LOGI(TAG, "Default queue mode set to %s",
              mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
+}
+
+void fpr_network_set_permission_state(fpr_visibility_t state)
+{
+    _peers_lock();
+    fpr_net.access_state = state;
+    _peers_unlock();
+}
+
+fpr_visibility_t fpr_network_get_permission_state(void)
+{
+    _peers_lock();
+    fpr_visibility_t state = fpr_net.access_state;
+    _peers_unlock();
+    return state;
 }
 
 fpr_queue_mode_t fpr_network_get_queue_mode(void)

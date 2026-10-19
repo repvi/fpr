@@ -25,7 +25,7 @@ esp_err_t fpr_sec_host_send_pwk(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *pe
                         ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
     ESP_LOGI(TAG, "Sending PWK to client: %s", peer->name);
-    fpr_connect_t response = make_fpr_info_with_keys(true, false, host_pwk, NULL);
+    fpr_connect_t response = _make_fpr_info_with_keys(true, false, host_pwk, NULL);
     esp_err_t err = fpr_network_send_to_peer(peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
@@ -54,7 +54,7 @@ esp_err_t fpr_sec_host_verify_and_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TY
     peer->security.lwk_valid = true;
     
     // Send acknowledgment with PWK + LWK back to client
-    fpr_connect_t response = make_fpr_info_with_keys(true, true, host_pwk, peer->security.lwk);
+    fpr_connect_t response = _make_fpr_info_with_keys(true, true, host_pwk, peer->security.lwk);
     esp_err_t err = fpr_network_send_to_peer(peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
@@ -63,18 +63,10 @@ esp_err_t fpr_sec_host_verify_and_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TY
         peer->is_connected = true;
         peer->state = FPR_PEER_STATE_CONNECTED;
         peer->sec_state = FPR_SEC_STATE_ESTABLISHED;
-        
-        // Reset sequence tracking for new session (handles peer restarts)
-        peer->last_seq_num = 0;
-        peer->receiving_fragmented = false;
-        peer->fragment_seq_num = 0;
-        
-        // Drain any stale queued packets from previous session
-        if (peer->response_queue != NULL) {
-            xQueueReset(peer->response_queue);
-            peer->queued_packets = 0;
-        }
-        
+
+        // Fresh session: reset sequence tracking and drain stale packets
+        _peer_clear_session(peer);
+
         ESP_LOGI(TAG, "Host: Peer connected with mutual keys: %s", peer->name);
     }
     
@@ -100,7 +92,7 @@ esp_err_t fpr_sec_client_handle_pwk(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE
     ESP_LOGI(TAG, "Generated client LWK");
     
     // Send device info back with PWK + client's LWK
-    fpr_connect_t response = make_fpr_info_with_keys(true, true, peer->security.pwk, peer->security.lwk);
+    fpr_connect_t response = _make_fpr_info_with_keys(true, true, peer->security.pwk, peer->security.lwk);
     esp_err_t err = fpr_network_send_to_peer(peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
     
     if (err == ESP_OK) {
@@ -134,19 +126,10 @@ esp_err_t fpr_sec_client_verify_ack(const uint8_t *peer_mac, FPR_STORE_HASH_TYPE
     peer->is_connected = true;
     peer->state = FPR_PEER_STATE_CONNECTED;
     peer->sec_state = FPR_SEC_STATE_ESTABLISHED;
-    
-    // Reset sequence tracking for new session (handles host restarts)
-    peer->last_seq_num = 0;
-    peer->receiving_fragmented = false;
-    peer->fragment_seq_num = 0;
-    
-    // Drain any stale queued packets from previous session
-    if (peer->response_queue != NULL) {
-        fpr_package_t tmp;
-        while (xQueueReceive(peer->response_queue, &tmp, 0) == pdPASS) { /* drop stale packets */ }
-        peer->queued_packets = 0;
-    }
-    
+
+    // Fresh session: reset sequence tracking and drain stale packets
+    _peer_clear_session(peer);
+
     ESP_LOGI(TAG, "Client: Connection established with %s (mutual keys)", peer->name);
     
     return ESP_OK;

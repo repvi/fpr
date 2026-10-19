@@ -34,13 +34,15 @@ void fpr_get_protocol_version_string(char *buf, size_t buf_size)
 void fpr_get_network_stats(fpr_network_stats_t *stats)
 {
     if (stats) {
+        /* Counters are written under peers_lock by the rx/send paths —
+         * read the whole block inside it or the snapshot can tear. */
+        _peers_lock();
         stats->packets_sent = fpr_net.stats.packets_sent;
         stats->packets_received = fpr_net.stats.packets_received;
         stats->packets_forwarded = fpr_net.stats.packets_forwarded;
         stats->packets_dropped = fpr_net.stats.packets_dropped;
         stats->send_failures = fpr_net.stats.send_failures;
         stats->replay_attacks_blocked = fpr_net.stats.replay_attacks_blocked;
-        _peers_lock();
         stats->peer_count = hashmap_size(&fpr_net.peers_map);
         _peers_unlock();
     }
@@ -48,7 +50,9 @@ void fpr_get_network_stats(fpr_network_stats_t *stats)
 
 void fpr_reset_network_stats(void)
 {
+    _peers_lock();
     memset(&fpr_net.stats, 0, sizeof(fpr_net.stats));
+    _peers_unlock();
     ESP_LOGI(TAG, "Network statistics reset");
 }
 

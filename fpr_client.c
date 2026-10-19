@@ -6,7 +6,7 @@
  * connection management, and the client side of the security handshake.
  * 
  * @version 1.0.0 (Stable)
- * @date December 2025S
+ * @date December 2025
  */
 
 #include "fpr/fpr.h"
@@ -25,14 +25,19 @@ typedef struct {
     bool found_connected;
 } host_search_ctx_t;
 
-typedef struct {
-    fpr_peer_info_t *array;
-    size_t max_peers;
-    size_t count;
-    bool connected_only;
-} peer_filter_ctx_t;
-
 static const char *TAG = "fpr_client";
+
+/* Send a (re)connection request to `mac` with a consistent log line.
+ * Call under _peers_lock() — the send path re-takes it recursively. */
+static void _client_send_request(const uint8_t *mac, const char *what)
+{
+    esp_err_t err = fpr_network_send_device_info(mac);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Sent %s to host " MACSTR, what, MAC2STR(mac));
+    } else {
+        ESP_LOGE(TAG, "Failed to send %s: %s", what, esp_err_to_name(err));
+    }
+}
 
 static void _peer_connected_cb(void *key, void *value, void *user_data)
 {
@@ -56,11 +61,9 @@ bool fpr_client_is_connected(void)
     return connected;
 }
 
-static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info) 
-{    
-    /* rx_ctrl is driver-provided but not documented as always non-NULL —
-     * report RSSI 0 ("unknown") when it is absent, like _peer_touch. */
-    const int8_t rssi = esp_now_info->rx_ctrl ? esp_now_info->rx_ctrl->rssi : 0;
+static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info)
+{
+    const int8_t rssi = _rx_rssi(esp_now_info);
 
     // Invoke discovery callback if registered
     if (fpr_net.client_config.discovery_cb) {
@@ -88,7 +91,7 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
                 #endif
                 // Still add as discovered but don't initiate connection
                 if (!existing) {
-                    _peer_add_discovered(info->name, esp_now_info->src_addr, 0, false);
+                    _peer_add_discovered(info->name, esp_now_info->src_addr, false);
                 }
                 return;
             }
@@ -99,7 +102,7 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
             #endif
             // Add as discovered but do not initiate handshake
             if (!existing) {
-                _peer_add_discovered(info->name, esp_now_info->src_addr, 0, false);
+                _peer_add_discovered(info->name, esp_now_info->src_addr, false);
             }
             return;
         }
@@ -108,18 +111,13 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
     // Add as discovered FIRST (this registers the peer with ESP-NOW) - skip if already exists
     esp_err_t err = ESP_OK;
     if (!existing) {
-        err = _peer_add_discovered(info->name, esp_now_info->src_addr, 0, false);
+        err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
     }
-    
+
     if (err == ESP_OK) {
         // Send initial discovery request without keys
-        err = fpr_network_send_device_info(esp_now_info->src_addr);
-        if (err == ESP_OK) {
-            ESP_LOGI(TAG, "Sent initial discovery to host " MACSTR, MAC2STR(esp_now_info->src_addr));
-        } else {
-            ESP_LOGE(TAG, "Failed to send discovery to host: %s", esp_err_to_name(err));
-        }
-        
+        _client_send_request(esp_now_info->src_addr, "initial discovery");
+
         if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
             ESP_LOGI(TAG, "Host discovered: %s (waiting for PWK)", info->name);
         } else {
@@ -173,24 +171,14 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
 
                     // Decide whether to initiate handshake automatically based on mode
                     if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
-                        esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
-                        if (err == ESP_OK) {
-                            ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
-                        } else {
-                            ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
-                        }
+                        _client_send_request(esp_now_info->src_addr, "reconnection request");
                     } else {
                         // Manual mode: consult selection_cb if present; if NULL, do not auto-reconnect
                         if (fpr_net.client_config.selection_cb) {
-                            int8_t rssi = esp_now_info->rx_ctrl ? esp_now_info->rx_ctrl->rssi : 0;
-                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, rssi);
+                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name,
+                                                                                     _rx_rssi(esp_now_info));
                             if (should_connect) {
-                                esp_err_t err = fpr_network_send_device_info(esp_now_info->src_addr);
-                                if (err == ESP_OK) {
-                                    ESP_LOGI(TAG, "Sent reconnection request to host " MACSTR, MAC2STR(esp_now_info->src_addr));
-                                } else {
-                                    ESP_LOGE(TAG, "Failed to send reconnection request: %s", esp_err_to_name(err));
-                                }
+                                _client_send_request(esp_now_info->src_addr, "reconnection request");
                             } else {
                                 #if (FPR_DEBUG == 1)
                                 ESP_LOGI(TAG, "Manual mode: application declined reconnect to host: %s", info->name);
@@ -285,7 +273,7 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
     _peers_unlock();
 }
 
-void _host_find_cb(void *key, void *value, void *user_data)
+static void _host_find_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
@@ -362,26 +350,13 @@ esp_err_t fpr_client_set_config(const fpr_client_config_t *config)
 esp_err_t fpr_client_get_config(fpr_client_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
-    
-    *config = fpr_net.client_config;
-    return ESP_OK;
-}
 
-static void _peer_filter_cb(void *key, void *value, void *user_data)
-{
-    (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
-    peer_filter_ctx_t *ctx = (peer_filter_ctx_t *)user_data;
-    
-    if (ctx->count < ctx->max_peers && peer) {
-        // Filter based on criteria
-        if (ctx->connected_only && peer->state != FPR_PEER_STATE_CONNECTED) {
-            return;  // Skip non-connected peers
-        }
-        
-        _peer_copy_to_info(peer, &ctx->array[ctx->count]);
-        ctx->count++;
-    }
+    /* Whole-struct copy under the lock — the setter writes under it,
+     * and rx callbacks read the same fields while holding it. */
+    _peers_lock();
+    *config = fpr_net.client_config;
+    _peers_unlock();
+    return ESP_OK;
 }
 
 size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_peers)
@@ -389,8 +364,8 @@ size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_
     if (!peer_array || max_peers == 0) {
         return 0;
     }
-    
-    peer_filter_ctx_t ctx = {
+
+    fpr_peer_collect_ctx_t ctx = {
         .array = peer_array,
         .max_peers = max_peers,
         .count = 0,
@@ -398,7 +373,7 @@ size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_
     };
 
     _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _peer_filter_cb, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _peer_collect_cb, &ctx);
     _peers_unlock();
     return ctx.count;
 }
@@ -407,8 +382,7 @@ esp_err_t fpr_client_connect_to_host(const uint8_t *peer_mac, TickType_t timeout
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Host not found - scan first");
@@ -457,8 +431,7 @@ esp_err_t fpr_client_disconnect(void)
     uint8_t host_mac[6];
     esp_err_t err = fpr_client_get_host_info(host_mac, NULL, 0);
     if (err == ESP_OK) {
-        _peers_lock();
-        FPR_STORE_HASH_TYPE *peer = _peer_from_map(host_mac);
+        FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(host_mac);
         if (peer) {
             _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
             ESP_LOGI(TAG, "Disconnected from host: %s", peer->name);

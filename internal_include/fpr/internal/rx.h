@@ -46,8 +46,9 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
 /** Extender-mode receive handler: route learning, forwarding, local delivery. */
 void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
 
-/** hashmap_foreach callback used by fpr_client_get_host_info(). */
-void _host_find_cb(void *key, void *value, void *user_data);
+/* Cooperative task exit shared by the task bodies in fpr.c, fpr_client.c
+ * and fpr_host.c — implemented in fpr.c next to _task_stop. */
+void _task_exit(TaskHandle_t *slot);
 
 /** Client-mode reconnect/keepalive task body. */
 void _task_client_reconnect(void *arg);

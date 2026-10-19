@@ -6,13 +6,14 @@
  * connection management, and the host side of the security handshake.
  * 
  * @version 1.0.0 (Stable)
- * @date December 2025S
+ * @date December 2025
  */
 
 #include "fpr/fpr.h"
 #include "fpr/internal/rx.h"
 #include "fpr/fpr_security.h"
 #include "fpr/internal/fpr_security_handshake.h"
+#include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_check.h"
 
@@ -28,7 +29,7 @@ static void _peer_connected_count_cb(void *key, void *value, void *user_data)
     }
 }
 
-size_t fpr_host_get_connected_count()
+size_t fpr_host_get_connected_count(void)
 {
     _peers_lock();
     size_t count = 0;
@@ -92,7 +93,7 @@ static void _host_rx_auto(const esp_now_recv_info_t *esp_now_info, const fpr_con
     if (existing) {
         _peer_touch(existing, esp_now_info);
     } else {
-        err = _peer_add_discovered(info->name, esp_now_info->src_addr, 0, false);
+        err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
         existing = _peer_from_map(esp_now_info->src_addr);
     }
     
@@ -140,8 +141,7 @@ esp_err_t fpr_host_approve_peer(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Peer not found");
@@ -195,8 +195,7 @@ esp_err_t fpr_host_reject_peer(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Peer not found");
@@ -238,7 +237,7 @@ static void _host_rx_manual(const esp_now_recv_info_t *esp_now_info, const fpr_c
         _safe_string_copy(existing->name, info->name, sizeof(existing->name));
     } else {
         // Add new peer as pending
-        esp_err_t err = _peer_add_discovered(info->name, esp_now_info->src_addr, 0, false);
+        esp_err_t err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
         if (err == ESP_OK) {
             existing = _peer_from_map(esp_now_info->src_addr);
             if (existing) {
@@ -321,7 +320,7 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
             #if (FPR_DEBUG == 1)
             ESP_LOGI(TAG, "Received packet from connected peer: %s (id: %d)", existing->name, package->id);
             #endif
-            _peer_store_data(esp_now_info, (const fpr_package_t *)data);
+            _peer_store_data(esp_now_info, package);
         }
         else {
             // Data packet from unknown/disconnected peer - drop it
@@ -338,8 +337,7 @@ esp_err_t fpr_host_block_peer(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
 
     if (peer) {
         peer->is_connected = false;
@@ -348,7 +346,7 @@ esp_err_t fpr_host_block_peer(const uint8_t *peer_mac)
         _peers_unlock();
     } else {
         // Add as blocked even if not in map yet
-        esp_err_t err = _peer_add(peer_mac, "Blocked", false, 0);
+        esp_err_t err = _peer_add(peer_mac, "Blocked", false);
         if (err == ESP_OK) {
             peer = _peer_from_map(peer_mac);
             if (peer) {
@@ -367,8 +365,7 @@ esp_err_t fpr_host_unblock_peer(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Peer not found");
@@ -390,8 +387,7 @@ esp_err_t fpr_host_disconnect_peer(const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGE(TAG, "Peer not found");
@@ -470,7 +466,11 @@ esp_err_t fpr_host_set_config(const fpr_host_config_t *config)
 esp_err_t fpr_host_get_config(fpr_host_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
-    
+
+    /* Whole-struct copy under the lock — the setter writes under it,
+     * and rx callbacks read the same fields while holding it. */
+    _peers_lock();
     *config = fpr_net.host_config;
+    _peers_unlock();
     return ESP_OK;
 }

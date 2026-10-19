@@ -33,14 +33,19 @@ static inline FPR_STORE_HASH_TYPE *_peer_from_map(const uint8_t *peer_mac)
     return (FPR_STORE_HASH_TYPE *)hashmap_get(&fpr_net.peers_map, peer_mac);
 }
 
+/* rx_ctrl is driver-provided but not documented as always non-NULL —
+ * report RSSI 0 ("unknown") when it is absent. */
+static inline int8_t _rx_rssi(const esp_now_recv_info_t *esp_now_info)
+{
+    return (esp_now_info && esp_now_info->rx_ctrl) ? esp_now_info->rx_ctrl->rssi : 0;
+}
+
 // Helper: Update peer RSSI and timestamp from ESP-NOW info
 static inline void _peer_touch(FPR_STORE_HASH_TYPE *peer, const esp_now_recv_info_t *esp_now_info)
 {
     if (peer && esp_now_info) {
         peer->last_seen = esp_timer_get_time();
-        /* rx_ctrl is driver-provided but not documented as always
-         * non-NULL; treat a missing block as "RSSI unknown". */
-        peer->rssi = esp_now_info->rx_ctrl ? esp_now_info->rx_ctrl->rssi : 0;
+        peer->rssi = _rx_rssi(esp_now_info);
     }
 }
 
@@ -101,6 +106,30 @@ static inline void _peers_unlock(void)
     }
 }
 
+/* Lock + map lookup in one step for the common
+ * lock → _peer_from_map → NULL-check preamble. The caller MUST
+ * _peers_unlock() on every path, including NULL (the helper leaves
+ * the lock held either way). */
+static inline FPR_STORE_HASH_TYPE *_peer_lookup_locked(const uint8_t *peer_mac)
+{
+    _peers_lock();
+    return _peer_from_map(peer_mac);
+}
+
+/* Count one esp_now_send() outcome under peers_lock. Safe to call while
+ * already holding the lock (it is recursive) — the extender path counts
+ * from inside the RX critical section. */
+static inline void _stats_count_send(esp_err_t err)
+{
+    _peers_lock();
+    if (err == ESP_OK) {
+        fpr_net.stats.packets_sent++;
+    } else {
+        fpr_net.stats.send_failures++;
+    }
+    _peers_unlock();
+}
+
 /* Free-or-defer for a store already detached (or being detached) from
  * the map: a blocking reader may hold a reference, in which case the
  * store becomes `dead` and is freed by _peer_store_release(). Call only
@@ -121,11 +150,6 @@ static inline void _peer_store_free_or_defer(FPR_STORE_HASH_TYPE *peer)
     fpr_security_clear_keys(&peer->security);
     heap_caps_free(peer);
 }
-
-/* Cooperative task stop/exit shared by the task bodies in fpr.c,
- * fpr_client.c and fpr_host.c — see the implementations in fpr.c. */
-void _task_stop(TaskHandle_t *handle, volatile bool *stop_flag);
-void _task_exit(TaskHandle_t *slot);
 
 /* Acquire a temporary reference on the store for `mac`. The reference
  * keeps the store (and its response queue) alive after _peers_unlock(),
@@ -163,6 +187,24 @@ static inline void _peer_store_release(FPR_STORE_HASH_TYPE *peer)
     }
 }
 
+/* Clear per-session RX state: sequence watermark, fragment reassembly
+ * and queued packets. A completed handshake starts a fresh session —
+ * stale counters or half-read fragments from the old one must not leak
+ * in. Call only under _peers_lock(). */
+static inline void _peer_clear_session(FPR_STORE_HASH_TYPE *peer)
+{
+    if (!peer) {
+        return;
+    }
+    peer->last_seq_num = 0;
+    peer->receiving_fragmented = false;
+    peer->fragment_seq_num = 0;
+    if (peer->response_queue != NULL) {
+        xQueueReset(peer->response_queue);
+        peer->queued_packets = 0;
+    }
+}
+
 /* Reset a peer to "known but not connected". Stale handshake state must
  * go with the connection: a leftover sec_state/keys pair locks out
  * re-handshakes (the fresh-request paths require SEC_STATE_NONE), and a
@@ -183,18 +225,27 @@ static inline void _reset_peer_connection(FPR_STORE_HASH_TYPE *peer, fpr_peer_st
 
 void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data);
 
-esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected, uint32_t key);
+esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected);
 
-esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, uint32_t key, bool is_connected);
+esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, bool is_connected);
 
 /* Remove a peer from peers_map and the esp_now peer table. */
 esp_err_t _peer_remove(const uint8_t *peer_mac);
-/* Free every store in peers_map (map itself is cleared by the caller). */
-void _reset_all_peers(void);
 /* hashmap_foreach callback freeing route-table entries. */
 void _route_free_cb(void *key, void *value, void *user_data);
-/* Decrement a store's queued_packets under peers_lock. */
-void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer);
 
 void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info);
-fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
+/* Defined in fpr_send.c — shared by the handshake code. */
+fpr_connect_t _make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
+
+/* hashmap_foreach payload for the peer-listing APIs: copy every store to
+ * fpr_peer_info_t up to ctx capacity, optionally connected-only. Call
+ * under _peers_lock() — peers_map iteration is not re-entrant. */
+typedef struct {
+    fpr_peer_info_t *array;
+    size_t max_peers;
+    size_t count;
+    bool connected_only;
+} fpr_peer_collect_ctx_t;
+
+void _peer_collect_cb(void *key, void *value, void *user_data);

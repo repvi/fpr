@@ -71,13 +71,7 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
         package.version = FPR_PROTOCOL_VERSION;  // Set protocol version
         
         last_result = esp_now_send(peer_address, (const uint8_t *)&package, sizeof(package));
-        _peers_lock();
-        if (last_result == ESP_OK) {
-            fpr_net.stats.packets_sent++;
-        } else {
-            fpr_net.stats.send_failures++;
-        }
-        _peers_unlock();
+        _stats_count_send(last_result);
         if (last_result != ESP_OK) {
             // Log specific error for debugging
             if (last_result == ESP_ERR_ESPNOW_NO_MEM) {
@@ -148,8 +142,8 @@ esp_err_t fpr_network_broadcast(const void *data, int size, fpr_package_id_t pac
 }
 
 // Create connection info with optional security keys
-// used externally
-fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk) 
+// used by the handshake code (declared in internal/helpers.h)
+fpr_connect_t _make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk)
 {
     fpr_connect_t info = {0}; // Zero-initialize
     _safe_string_copy(info.name, fpr_net.name, sizeof(info.name));
@@ -179,7 +173,7 @@ fpr_connect_t make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const 
 static fpr_connect_t make_fpr_info(void)
 {
     // No keys by default
-    return make_fpr_info_with_keys(false, false, NULL, NULL);
+    return _make_fpr_info_with_keys(false, false, NULL, NULL);
 }
 
 esp_err_t fpr_network_send_device_info(const uint8_t *peer_address)

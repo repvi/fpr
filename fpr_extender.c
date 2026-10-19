@@ -36,7 +36,7 @@
 // USAGE:
 //   fpr_network_init("Extender1");
 //   fpr_network_start();
-//   fpr_set_extender_mode();  // Enable routing/forwarding
+//   fpr_network_set_mode(FPR_MODE_EXTENDER);  // Enable routing/forwarding
 //
 
 static const char *TAG = "fpr_extender";
@@ -66,11 +66,9 @@ static bool _should_forward_packet(const fpr_package_t *package, bool is_for_me,
 static esp_err_t _forward_package(const uint8_t *next_hop, const fpr_package_t *package)
 {
     esp_err_t result = esp_now_send(next_hop, (const uint8_t *)package, sizeof(*package));
-    if (result == ESP_OK) {
-        fpr_net.stats.packets_sent++;
-    } else {
-        fpr_net.stats.send_failures++;
-    }
+    /* _rx_begin left the lock held; _stats_count_send re-takes it
+     * recursively — no implicit "callers must hold" coupling. */
+    _stats_count_send(result);
     return result;
 }
 
@@ -106,7 +104,7 @@ void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
         }
     } else {
         // Add new peer
-        _peer_add(esp_now_info->src_addr, NULL, false, 0);
+        _peer_add(esp_now_info->src_addr, NULL, false);
         peer = _peer_from_map(esp_now_info->src_addr);
         if (peer) {
             peer->hop_count = 1;

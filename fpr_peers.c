@@ -14,9 +14,22 @@
 #include "esp_heap_caps.h"
 
 static const char *TAG = "fpr_peers";
+
+/* queued_packets is written by the rx path under peers_lock; the
+ * blocking reader holds only a store reference, so the decrement
+ * must take the lock too or the counter desyncs from the real queue. */
+static void _peer_dec_queued(FPR_STORE_HASH_TYPE *peer)
+{
+    _peers_lock();
+    if (peer->queued_packets > 0) {
+        peer->queued_packets--;
+    }
+    _peers_unlock();
+}
+
 esp_err_t fpr_network_add_peer(const uint8_t *peer_mac)
 {
-    return _peer_add(peer_mac, NULL, false, 0);
+    return _peer_add(peer_mac, NULL, false);
 }
 
 esp_err_t fpr_network_remove_peer(const uint8_t *peer_mac)
@@ -30,16 +43,6 @@ int fpr_network_get_peer_count(void)
     int count = hashmap_size(&fpr_net.peers_map);
     _peers_unlock();
     return count;
-}
-
-void fpr_network_set_permission_state(fpr_visibility_t state)
-{
-    fpr_net.access_state = state;
-}
-
-fpr_visibility_t fpr_network_get_permission_state(void)
-{
-    return fpr_net.access_state;
 }
 
 typedef struct {
@@ -100,8 +103,7 @@ esp_err_t fpr_get_peer_info(const uint8_t *peer_mac, fpr_peer_info_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGD(TAG, "Peer not found");
@@ -112,38 +114,21 @@ esp_err_t fpr_get_peer_info(const uint8_t *peer_mac, fpr_peer_info_t *info)
     return ESP_OK;
 }
 
-typedef struct {
-    fpr_peer_info_t *array;
-    size_t max_peers;
-    size_t count;
-} peer_list_ctx_t;
-
-static void _peer_list_cb(void *key, void *value, void *user_data)
-{
-    (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
-    peer_list_ctx_t *ctx = (peer_list_ctx_t *)user_data;
-    
-    if (ctx->count < ctx->max_peers && peer) {
-        _peer_copy_to_info(peer, &ctx->array[ctx->count]);
-        ctx->count++;
-    }
-}
-
 size_t fpr_list_all_peers(fpr_peer_info_t *peer_array, size_t max_peers)
 {
     if (!peer_array || max_peers == 0) {
         return 0;
     }
-    
-    peer_list_ctx_t ctx = {
+
+    fpr_peer_collect_ctx_t ctx = {
         .array = peer_array,
         .max_peers = max_peers,
-        .count = 0
+        .count = 0,
+        .connected_only = false
     };
 
     _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _peer_list_cb, &ctx);
+    hashmap_foreach(&fpr_net.peers_map, _peer_collect_cb, &ctx);
     _peers_unlock();
     return ctx.count;
 }
@@ -258,9 +243,8 @@ out:
 esp_err_t fpr_network_set_peer_queue_mode(const uint8_t *peer_mac, fpr_queue_mode_t mode)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer) {
         peer->queue_mode = mode;
         _peers_unlock();
@@ -278,8 +262,7 @@ uint32_t fpr_network_get_peer_queued_packets(const uint8_t *peer_mac)
         return 0;
     }
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     uint32_t count = peer ? peer->queued_packets : 0;
     _peers_unlock();
     return count;
@@ -370,8 +353,7 @@ bool fpr_is_peer_reachable(const uint8_t *peer_mac, uint32_t timeout_ms)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, false, TAG, "Peer MAC is NULL");
 
-    _peers_lock();
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(peer_mac);
     if (peer == NULL) {
         _peers_unlock();
         ESP_LOGW(TAG, "Peer not found in peer map");

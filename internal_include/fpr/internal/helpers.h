@@ -33,19 +33,18 @@ static inline FPR_STORE_HASH_TYPE *_peer_from_map(const uint8_t *peer_mac)
     return (FPR_STORE_HASH_TYPE *)hashmap_get(&fpr_net.peers_map, peer_mac);
 }
 
-/* rx_ctrl is driver-provided but not documented as always non-NULL —
- * report RSSI 0 ("unknown") when it is absent. */
-static inline int8_t _rx_rssi(const esp_now_recv_info_t *esp_now_info)
+/* Transports that cannot measure RSSI report 0 ("unknown"). */
+static inline int8_t _rx_rssi(const fpr_rx_frame_t *frame)
 {
-    return (esp_now_info && esp_now_info->rx_ctrl) ? esp_now_info->rx_ctrl->rssi : 0;
+    return frame ? frame->rssi : 0;
 }
 
-// Helper: Update peer RSSI and timestamp from ESP-NOW info
-static inline void _peer_touch(FPR_STORE_HASH_TYPE *peer, const esp_now_recv_info_t *esp_now_info)
+// Helper: Update peer RSSI and timestamp from the received frame
+static inline void _peer_touch(FPR_STORE_HASH_TYPE *peer, const fpr_rx_frame_t *frame)
 {
-    if (peer && esp_now_info) {
+    if (peer && frame) {
         peer->last_seen = esp_timer_get_time();
-        peer->rssi = _rx_rssi(esp_now_info);
+        peer->rssi = _rx_rssi(frame);
     }
 }
 
@@ -75,14 +74,14 @@ static inline bool is_fpr_package_compatible(int len)
     return (len == sizeof(fpr_package_t));
 }
 
-static inline void fpr_set_peer_info(esp_now_peer_info_t *gen_info)
+static inline void fpr_set_peer_info(fpr_wire_peer_info_t *gen_info)
 {
     if (!gen_info) {
         return;
     }
     gen_info->channel = 0; // Use current channel
     gen_info->encrypt = false; // No encryption
-    gen_info->ifidx = WIFI_IF_STA;
+    gen_info->ifidx = 0;       // STA (wire value; not a driver ifidx)
 }
 
 /* Serialize access to fpr_net.peers_map and the peer stores it owns.
@@ -116,7 +115,17 @@ static inline FPR_STORE_HASH_TYPE *_peer_lookup_locked(const uint8_t *peer_mac)
     return _peer_from_map(peer_mac);
 }
 
-/* Count one esp_now_send() outcome under peers_lock. Safe to call while
+/* Snapshot the radio port. Teardown memsets fpr_net without holding
+ * the lock, so a bare fpr_net.transport->op() can dereference NULL
+ * mid-teardown — but every transport vtable is a static const, so a
+ * captured non-NULL pointer stays callable even while fpr_net is
+ * being zeroed. Callers still NULL-check the snapshot. */
+static inline const fpr_transport_t *_transport(void)
+{
+    return fpr_net.transport;
+}
+
+/* Count one transport send() outcome under peers_lock. Safe to call while
  * already holding the lock (it is recursive) — the extender path counts
  * from inside the RX critical section. */
 static inline void _stats_count_send(esp_err_t err)
@@ -223,13 +232,13 @@ static inline void _reset_peer_connection(FPR_STORE_HASH_TYPE *peer, fpr_peer_st
     peer->fragment_seq_num = 0;
 }
 
-void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data);
+void _peer_store_data(const fpr_rx_frame_t *frame, const fpr_package_t *data);
 
 esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected);
 
 esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, bool is_connected);
 
-/* Remove a peer from peers_map and the esp_now peer table. */
+/* Remove a peer from peers_map and the transport peer table. */
 esp_err_t _peer_remove(const uint8_t *peer_mac);
 /* hashmap_foreach callback freeing route-table entries. */
 void _route_free_cb(void *key, void *value, void *user_data);

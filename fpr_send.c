@@ -4,10 +4,10 @@
  */
 #include "fpr/fpr.h"
 #include "fpr/internal/helpers.h"
+#include "fpr/internal/codec.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_now.h"
 #include "esp_log.h"
 #include "esp_check.h"
 
@@ -70,15 +70,20 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
         package.max_hops = options->max_hops > 0 ? options->max_hops : FPR_DEFAULT_MAX_HOPS;
         package.version = FPR_PROTOCOL_VERSION;  // Set protocol version
         
-        last_result = esp_now_send(peer_address, (const uint8_t *)&package, sizeof(package));
+        uint8_t send_buf[sizeof(package)];
+        size_t send_len = fpr_codec_encode(&package, send_buf, sizeof(send_buf));
+        const fpr_transport_t *t = _transport();
+        last_result = send_len == 0 ? ESP_ERR_INVALID_SIZE
+                        : t == NULL ? ESP_ERR_INVALID_STATE
+                        : t->send(t->ctx, peer_address, send_buf, send_len);
         _stats_count_send(last_result);
         if (last_result != ESP_OK) {
             // Log specific error for debugging
-            if (last_result == ESP_ERR_ESPNOW_NO_MEM) {
-                ESP_LOGW(TAG, "ESP-NOW buffer full (NO_MEM), try reducing send rate or increasing receive processing");
+            if (last_result == ESP_ERR_NO_MEM) {
+                ESP_LOGW(TAG, "Transport buffer full (NO_MEM), try reducing send rate or increasing receive processing");
             }
             #if (FPR_DEBUG == 1)
-            ESP_LOGW(TAG, "esp_now_send failed: %s (0x%x)", esp_err_to_name(last_result), last_result);
+            ESP_LOGW(TAG, "transport send failed: %s (0x%x)", esp_err_to_name(last_result), last_result);
             #endif
             return last_result; // Fail early on send error
         }

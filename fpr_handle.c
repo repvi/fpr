@@ -33,12 +33,12 @@ static void _log_version_info(code_version_t packet_version, const uint8_t *src_
              MAC2STR(src_mac));
 }
 
-bool fpr_version_handle_version(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len, code_version_t version) 
+bool fpr_version_handle_version(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version) 
 {
     // Check basic version compatibility
     if (!fpr_version_is_compatible(version)) {
-        _log_version_info(version, esp_now_info->src_addr);
-        ESP_LOGE(TAG, "Rejecting packet from " MACSTR " - incompatible version", MAC2STR(esp_now_info->src_addr));
+        _log_version_info(version, frame->src_mac);
+        ESP_LOGE(TAG, "Rejecting packet from " MACSTR " - incompatible version", MAC2STR(frame->src_mac));
         return false;
     }
 
@@ -48,24 +48,24 @@ bool fpr_version_handle_version(const esp_now_recv_info_t *esp_now_info, const u
     }
     
     // Version mismatch detected - log it
-    _log_version_info(version, esp_now_info->src_addr);
+    _log_version_info(version, frame->src_mac);
     
     // Try legacy handler for older versions
     if (fpr_version_needs_legacy_handler(version)) {
-        if (fpr_legacy_handle_protocol_version(version, esp_now_info, data, len)) {
+        if (fpr_legacy_handle_protocol_version(version, frame, data, len)) {
             return true;
         }
     }
     
     // Try new handler for future versions
     if (fpr_version_needs_newer_handler(version)) {
-        if (fpr_new_handle_protocol_version(version, esp_now_info, data, len)) {
+        if (fpr_new_handle_protocol_version(version, frame, data, len)) {
             return true;
         }
     }
     
     ESP_LOGW(TAG, "No handler accepted packet from " MACSTR " with version %"PRId32".%"PRId32".%"PRId32,
-             MAC2STR(esp_now_info->src_addr),
+             MAC2STR(frame->src_mac),
              CODE_VERSION_MAJOR(version),
              CODE_VERSION_MINOR(version),
              CODE_VERSION_PATCH(version));

@@ -15,7 +15,7 @@
 
 #include "fpr/fpr_config.h"
 #include "fpr/fpr_lts.h"
-#include "esp_now.h"
+#include "fpr/fpr_transport.h"
 #include "esp_log.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -31,13 +31,13 @@ extern "C" {
  * Legacy v0 packets had no version field populated (version=0).
  * The protocol union layout was the same as v1, just version wasn't set.
  * 
- * @param esp_now_info ESP-NOW receive info with source MAC, RSSI, etc.
+ * @param frame Transport receive frame (source MAC, RSSI, etc.)
  * @param data Raw packet data
  * @param len Packet length
  * @return true if packet can be processed with current handler
  * @return false if packet should be dropped
  */
-bool fpr_legacy_handle_protocol_v0(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+bool fpr_legacy_handle_protocol_v0(const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /**
  * @brief Check if a packet appears to be legacy format
@@ -48,7 +48,7 @@ bool fpr_legacy_handle_protocol_v0(const esp_now_recv_info_t *esp_now_info, cons
  */
 bool fpr_legacy_is_v0_packet(const uint8_t *data, int len);
 
-bool fpr_legacy_handle_protocol_version(code_version_t version, const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+bool fpr_legacy_handle_protocol_version(code_version_t version, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 #ifdef __cplusplus
 }

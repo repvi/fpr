@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "fpr/internal/private_defs.h"
+#include "fpr/internal/codec.h"
 #include "fpr/fpr_lts.h"
 #include "fpr/fpr_security.h"
 
@@ -28,7 +29,8 @@ size_t fpr_sil_build_control(void *buf, size_t cap,
         cap < sizeof(fpr_package_t)) {
         return 0;
     }
-    fpr_package_t *pkg = buf;
+    fpr_package_t pkg_storage;
+    fpr_package_t *pkg = &pkg_storage;
     memset(pkg, 0, sizeof(*pkg));
     pkg->id = FPR_PACKET_ID_CONTROL;
     pkg->version = FPR_PROTOCOL_VERSION;
@@ -51,7 +53,7 @@ size_t fpr_sil_build_control(void *buf, size_t cap,
         ci->has_lwk = true;
     }
     pkg->payload_size = sizeof(*ci);
-    return sizeof(*pkg);
+    return fpr_codec_encode(pkg, buf, cap) != 0 ? sizeof(*pkg) : 0;
 }
 
 size_t fpr_sil_build_data(void *buf, size_t cap,
@@ -65,7 +67,8 @@ size_t fpr_sil_build_data(void *buf, size_t cap,
         payload_len > sizeof(((fpr_package_t *)0)->protocol)) {
         return 0;
     }
-    fpr_package_t *pkg = buf;
+    fpr_package_t pkg_storage;
+    fpr_package_t *pkg = &pkg_storage;
     memset(pkg, 0, sizeof(*pkg));
     pkg->id = id;
     pkg->version = FPR_PROTOCOL_VERSION;
@@ -78,7 +81,7 @@ size_t fpr_sil_build_data(void *buf, size_t cap,
         memcpy(&pkg->protocol, payload, payload_len);
         pkg->payload_size = (uint16_t)payload_len;
     }
-    return sizeof(*pkg);
+    return fpr_codec_encode(pkg, buf, cap) != 0 ? sizeof(*pkg) : 0;
 }
 
 bool fpr_sil_describe(const void *buf, size_t len, char *out, size_t out_len)
@@ -87,7 +90,13 @@ bool fpr_sil_describe(const void *buf, size_t len, char *out, size_t out_len)
         out_len < 96) {
         return false;
     }
-    const fpr_package_t *pkg = buf;
+    /* Frames longer than the packet still describe fine — decode the
+     * wire prefix only, as the old cast-and-read did. */
+    fpr_package_t decoded;
+    if (!fpr_codec_decode(buf, sizeof(decoded), &decoded)) {
+        return false;
+    }
+    const fpr_package_t *pkg = &decoded;
     int n = snprintf(out, out_len,
              "type=%d id=%d seq=%u orig=%02x:%02x:%02x:%02x:%02x:%02x "
              "dest=%02x:%02x:%02x:%02x:%02x:%02x hop=%u max=%u plen=%u",

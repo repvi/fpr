@@ -35,11 +35,10 @@
 #include "fpr/internal/helpers.h"
 #include "fpr/internal/rx.h"
 #include "fpr/fpr_config.h"
+#include "fpr/fpr_transport.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_wifi.h"
-#include "esp_now.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_check.h"
@@ -54,9 +53,10 @@
 
 fpr_network_t fpr_net = {0}; // extern from private_defs.h
 
-static esp_now_peer_info_t broadcast_info;
-
 static const char *TAG = "fpr";
+
+static void _rx_dispatch(void *sink, const fpr_rx_frame_t *frame);
+static void _tx_done_sink(void *sink, const uint8_t *mac, bool ok);
 
 /* Cooperative-stop grace for the loop/reconnect tasks: they poll their
  * stop flag once per configured poll interval (power-mode stretched),
@@ -105,21 +105,17 @@ void _task_exit(TaskHandle_t *slot)
     vTaskDelete(NULL);
 }
 
-// Helper: Setup broadcast peer configuration
-
-static void _broadcast_peer_setup(void)
-{
-    const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    memcpy(broadcast_info.peer_addr, broadcast_mac, 6);
-    fpr_set_peer_info(&broadcast_info);
-}
-
-// Helper: Add broadcast peer to ESP-NOW
+// Helper: Add broadcast peer to the transport's peer table
 // this needs to be called whenever we change mode (host/client/extender)
 static esp_err_t _broadcast_peer_add(const char *mode_name)
 {
-    esp_now_del_peer(broadcast_info.peer_addr);
-    esp_err_t err = esp_now_add_peer(&broadcast_info);
+    static const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
+    const fpr_transport_t *t = _transport();
+    if (t == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    t->del_peer(t->ctx, broadcast_mac);
+    esp_err_t err = t->add_peer(t->ctx, broadcast_mac, 0, false);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Broadcast peer added for %s", mode_name);
     }
@@ -143,7 +139,14 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
     ESP_RETURN_ON_FALSE(strlen(name) < sizeof(fpr_net.name), ESP_ERR_INVALID_ARG, TAG, "Name too long");
     ESP_RETURN_ON_FALSE(fpr_net.state == FPR_STATE_UNINITIALIZED, ESP_ERR_INVALID_STATE, TAG, "Network already initialized");
-    ESP_RETURN_ON_ERROR(esp_read_mac(fpr_net.mac, ESP_MAC_WIFI_STA), TAG, "Failed to read MAC address");
+
+    fpr_net.transport = config->transport ? config->transport
+                                          : fpr_transport_espnow();
+    const fpr_transport_t *t = fpr_net.transport;
+    ESP_RETURN_ON_FALSE(t->mtu > sizeof(fpr_package_t), ESP_ERR_INVALID_SIZE,
+                        TAG, "Transport MTU %u too small for fpr_package_t (%u)",
+                        (unsigned)t->mtu, (unsigned)sizeof(fpr_package_t));
+    ESP_RETURN_ON_ERROR(t->get_mac(t->ctx, fpr_net.mac), TAG, "Failed to read MAC address");
     
     strncpy(fpr_net.name, name, sizeof(fpr_net.name) - 1);
     fpr_net.name[sizeof(fpr_net.name) - 1] = '\0';
@@ -152,18 +155,17 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     fpr_net.power_mode = config->power_mode;
     fpr_net.default_queue_mode = config->queue_mode;
     
-    // Set WiFi channel if specified (must be done before ESP-NOW init)
+    // Set the channel if specified (must be done before the transport opens)
     if (config->channel >= 1 && config->channel <= 14) {
-        esp_err_t err = esp_wifi_set_channel(config->channel, WIFI_SECOND_CHAN_NONE);
+        esp_err_t err = t->set_channel(t->ctx, config->channel);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to set WiFi channel %d: %s", config->channel, esp_err_to_name(err));
         } else {
             ESP_LOGI(TAG, "WiFi channel set to %d", config->channel);
         }
     }
-    
-    // Initialize broadcast peer info
-    _broadcast_peer_setup();
+
+    // Register the broadcast peer
     _broadcast_peer_add("default");
     
     fpr_net.access_state = FPR_VISIBILITY_PUBLIC;
@@ -185,7 +187,7 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
 
     /* peers_lock is process-lifetime: created lazily here and never
      * deleted. A callback or reader may legitimately reach for it after
-     * deinit (esp_now callbacks already dispatched, a blocked
+     * deinit (radio callbacks already dispatched, a blocked
      * get_data_from_peer waking late) — deleting the semaphore under a
      * waiter is UB, and the guarded objects are left in hashmap's
      * safe-empty state anyway. */
@@ -205,14 +207,17 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
         hashmap_free(&fpr_net.peers_map);
         return ESP_ERR_NO_MEM;
     }
-    esp_err_t esp_now_err = esp_now_init();
-    if (esp_now_err != ESP_OK) {
+    /* Bring the radio up with the dispatch sinks installed. RX frames
+     * arriving before set_mode installs a handler are dropped, matching
+     * the old "no recv cb registered until start" behaviour. */
+    esp_err_t radio_err = t->open(t->ctx, _rx_dispatch, _tx_done_sink, NULL);
+    if (radio_err != ESP_OK) {
         /* The maps are already allocated — free them or every init retry
          * on a degraded radio leaks the bucket arrays. */
         hashmap_free(&fpr_net.routes_map);
         hashmap_free(&fpr_net.peers_map);
-        ESP_LOGE(TAG, "Failed to initialize ESP-NOW: %s", esp_err_to_name(esp_now_err));
-        return esp_now_err;
+        ESP_LOGE(TAG, "Failed to open transport: %s", esp_err_to_name(radio_err));
+        return radio_err;
     }
     
     fpr_net.state = FPR_STATE_INITIALIZED;
@@ -226,16 +231,19 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
     return ESP_OK;
 }
 
-/* Deinit peer sweep: detach each store from the esp_now peer table and
- * free it (or mark dead for a live reader to release). Only used by
- * fpr_network_deinit — kept file-local. */
+/* Deinit peer sweep: detach each store from the transport peer table
+ * and free it (or mark dead for a live reader to release). Only used
+ * by fpr_network_deinit — kept file-local. */
 static void _peer_cleanup_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     (void)user_data;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     if (peer) {
-        esp_now_del_peer(peer->peer_info.peer_addr);
+        const fpr_transport_t *t = _transport();
+        if (t) {
+            t->del_peer(t->ctx, peer->mac);
+        }
         _peer_store_free_or_defer(peer);
     }
 }
@@ -254,11 +262,6 @@ esp_err_t fpr_network_deinit(void)
     fpr_net.state = FPR_STATE_UNINITIALIZED;
     _peers_unlock();
 
-    /* Drop the recv callback before tearing down: nothing new is
-     * dispatched on the wifi task after this point, so only callbacks
-     * already in flight remain below. */
-    esp_now_unregister_recv_cb();
-
     /* Ask the internal tasks to exit rather than vTaskDelete them: a
      * task killed while holding peers_lock strands the recursive mutex
      * for every later caller (FreeRTOS never releases a dead task's
@@ -267,12 +270,18 @@ esp_err_t fpr_network_deinit(void)
     _task_stop(&fpr_net.reconnect_task, &fpr_net.reconnect_stop_requested);
     _task_stop(&fpr_net.loop_task, &fpr_net.loop_stop_requested);
 
-    esp_err_t esp_now_result = esp_now_deinit();
+    /* close() unregisters the recv sink before tearing the radio down:
+     * nothing new is dispatched on the wifi task after it returns, so
+     * only callbacks already in flight remain below. A deinit before
+     * any successful init has no transport yet — nothing to close. */
+    esp_err_t radio_result = fpr_net.transport
+        ? fpr_net.transport->close(fpr_net.transport->ctx) : ESP_OK;
 
-    /* Drain the callbacks dispatched before the unregister: they finish
-     * on the still-valid lock + maps (writes gated by the state check;
-     * reads still see valid entries). The wifi task outranks every
-     * deinit caller, so a modest delay guarantees it got scheduled. */
+    /* Drain the callbacks dispatched before the transport closed: they
+     * finish on the still-valid lock + maps (writes gated by the state
+     * check; reads still see valid entries). The wifi task outranks
+     * every deinit caller, so a modest delay guarantees it got
+     * scheduled. */
     vTaskDelay(pdMS_TO_TICKS(FPR_DEINIT_SETTLE_MS));
 
     /* Now free under the lock. A pathological straggler that still
@@ -296,32 +305,43 @@ esp_err_t fpr_network_deinit(void)
     fpr_net.state = FPR_STATE_UNINITIALIZED;
     fpr_net.peers_lock = kept_lock;
 
-    return esp_now_result;
+    return radio_result;
 }
 
-// default
-static void _tx_done(const wifi_tx_info_t *tx_info, esp_now_send_status_t status)
+/* Transport TX-completion sink — debug logging only, same as the old
+ * esp_now send-cb. */
+static void _tx_done_sink(void *sink, const uint8_t *mac, bool ok)
 {
+    (void)sink;
+    (void)mac;
     #if (FPR_DEBUG == 1)
-    if (status == ESP_NOW_SEND_SUCCESS) {
+    if (ok) {
         ESP_LOGI(TAG, "Data sent successfully");
     } else {
-        ESP_LOGE(TAG, "Failed to send data: %d", status);
+        ESP_LOGE(TAG, "Failed to send data");
     }
     #endif
+}
+
+/* Transport RX sink: every received frame lands here and is handed to
+ * the mode protocol handler installed by fpr_network_set_mode. Runs on
+ * the transport's RX context (the wifi task under ESP-NOW). */
+static void _rx_dispatch(void *sink, const fpr_rx_frame_t *frame)
+{
+    (void)sink;
+    if (frame && frame->data && fpr_net.rx_handler) {
+        fpr_net.rx_handler(frame, frame->data, (int)frame->len);
+    }
 }
 
 esp_err_t fpr_network_start(void)
 {
     ESP_RETURN_ON_FALSE(fpr_net.state == FPR_STATE_INITIALIZED || fpr_net.state == FPR_STATE_STOPPED,
                         ESP_ERR_INVALID_STATE, TAG, "Network not initialized (state %d)", fpr_net.state);
-    wifi_mode_t mode;
-    ESP_RETURN_ON_ERROR(esp_wifi_get_mode(&mode), TAG, "WiFi is not initialized");
-    ESP_RETURN_ON_FALSE(mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA, ESP_ERR_INVALID_STATE, TAG, "WiFi is not started or in STA/APSTA mode");
-    ESP_RETURN_ON_ERROR(esp_now_register_send_cb(_tx_done), TAG, "Failed to register send callback");
+    ESP_RETURN_ON_FALSE(fpr_net.transport->ready(fpr_net.transport->ctx),
+                        ESP_ERR_INVALID_STATE, TAG, "Radio is not initialized or in a usable mode");
 
-    /* set_mode installs the mode's receive handler; registering one
-     * here first would only be unregistered again in the same call. */
+    /* set_mode installs the mode's receive handler. */
     fpr_network_set_mode(FPR_MODE_CLIENT);
 
     _peers_lock();
@@ -348,18 +368,13 @@ esp_err_t fpr_network_stop(void)
     return ESP_OK;
 }
 
-static esp_err_t _set_protocol_cbs(esp_now_send_cb_t sender, esp_now_recv_cb_t receiver)
+/* Install the mode's protocol handler for _rx_dispatch. An assignment
+ * now — the transport sink is fixed — kept as a function so set_mode
+ * stays readable. */
+static esp_err_t _set_rx_handler(void (*handler)(const fpr_rx_frame_t *,
+                                                 const uint8_t *, int))
 {
-    if (sender) {
-        ESP_RETURN_ON_ERROR(esp_now_unregister_send_cb(), TAG, "Failed to unregister send callback");
-        ESP_RETURN_ON_ERROR(esp_now_register_send_cb(sender), TAG, "Failed to register send callback");
-    }
-
-    if (receiver) {
-        ESP_RETURN_ON_ERROR(esp_now_unregister_recv_cb(), TAG, "Failed to unregister receive callback");
-        ESP_RETURN_ON_ERROR(esp_now_register_recv_cb(receiver), TAG, "Failed to register receive callback");
-    }
-    
+    fpr_net.rx_handler = handler;
     return ESP_OK;
 }
 
@@ -410,7 +425,7 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
         if (_broadcast_peer_add("client") != ESP_OK) {
             ESP_LOGW(TAG, "Broadcast peer add failed for client mode");
         }
-        if (_set_protocol_cbs(NULL, _rx_client) != ESP_OK) {
+        if (_set_rx_handler(_rx_client) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to install client RX handler");
         }
     }
@@ -428,7 +443,7 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
             ESP_LOGE(TAG, "Failed to generate PWK for host mode");
         }
         _peers_unlock();
-        if (_set_protocol_cbs(NULL, _rx_host) != ESP_OK) {
+        if (_set_rx_handler(_rx_host) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to install host RX handler");
         }
     }
@@ -436,7 +451,7 @@ void fpr_network_set_mode(fpr_mode_type_t mode)
         if (_broadcast_peer_add("extender") != ESP_OK) {
             ESP_LOGW(TAG, "Broadcast peer add failed for extender mode");
         }
-        if (_set_protocol_cbs(NULL, _rx_extender) != ESP_OK) {
+        if (_set_rx_handler(_rx_extender) != ESP_OK) {
             ESP_LOGE(TAG, "Failed to install extender RX handler");
         }
     }

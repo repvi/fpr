@@ -24,7 +24,7 @@
 
 #include "fpr/fpr_config.h"
 #include "fpr/fpr_lts.h"
-#include "esp_now.h"
+#include "fpr/fpr_transport.h"
 #include "esp_log.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -42,13 +42,13 @@ extern "C" {
  * is compatible enough, it extracts what it can.
  * 
  * @param version Protocol version of the received packet
- * @param esp_now_info ESP-NOW receive info with source MAC, RSSI, etc.
+ * @param frame Transport receive frame (source MAC, RSSI, etc.)
  * @param data Raw packet data
  * @param len Packet length
  * @return true if packet was processed successfully (even partially)
  * @return false if packet should be dropped (incompatible)
  */
-bool fpr_new_handle_protocol_version(code_version_t version, const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len);
+bool fpr_new_handle_protocol_version(code_version_t version, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 #ifdef __cplusplus
 }

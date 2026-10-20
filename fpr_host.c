@@ -38,18 +38,18 @@ size_t fpr_host_get_connected_count(void)
     return count;
 }
 
-static bool _host_allow_connect(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing) 
+static bool _host_allow_connect(const fpr_rx_frame_t *frame, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing) 
 {
     // Check if peer is blocked
     if (existing && existing->state == FPR_PEER_STATE_BLOCKED) {
-        ESP_LOGW(TAG, "Peer " MACSTR " is blocked - ignoring request", MAC2STR(esp_now_info->src_addr));
+        ESP_LOGW(TAG, "Peer " MACSTR " is blocked - ignoring request", MAC2STR(frame->src_mac));
         return false;
     }
 
     // Verify PWK if included (skip verification for initial discovery)
     if (info->has_pwk && fpr_net.host_pwk_valid) {
         if (!fpr_security_verify_pwk(info->pwk, fpr_net.host_pwk)) {
-            ESP_LOGW(TAG, "Invalid PWK from " MACSTR, MAC2STR(esp_now_info->src_addr));
+            ESP_LOGW(TAG, "Invalid PWK from " MACSTR, MAC2STR(frame->src_mac));
             return false;
         }
     }
@@ -66,22 +66,22 @@ static bool _host_allow_connect(const esp_now_recv_info_t *esp_now_info, const f
     return true;
 }
 
-static void _host_rx_auto(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing) 
+static void _host_rx_auto(const fpr_rx_frame_t *frame, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing) 
 {
     // Check if client is requesting reconnection (client restarted and lost keys)
     if (existing && existing->is_connected && !info->has_pwk && !info->has_lwk) {
         ESP_LOGI(TAG, "Client %s reconnecting (restarted) - reinitiating handshake", existing->name);
         // Client restarted - reinitiate handshake
         _reset_peer_connection(existing, FPR_PEER_STATE_DISCOVERED);
-        _peer_touch(existing, esp_now_info);
+        _peer_touch(existing, frame);
         // Send PWK to restart handshake
-        fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
+        fpr_sec_host_send_pwk(frame->src_mac, existing, fpr_net.host_pwk);
         return; // Done - wait for client's response
     }
     
     // If already connected and not reconnecting, just update timestamp
     if (existing && existing->is_connected) {
-        _peer_touch(existing, esp_now_info);
+        _peer_touch(existing, frame);
         #if (FPR_DEBUG == 1)
         ESP_LOGW(TAG, "Peer already connected: %s", existing->name);
         #endif
@@ -91,10 +91,10 @@ static void _host_rx_auto(const esp_now_recv_info_t *esp_now_info, const fpr_con
     // Add or update peer
     esp_err_t err = ESP_OK;
     if (existing) {
-        _peer_touch(existing, esp_now_info);
+        _peer_touch(existing, frame);
     } else {
-        err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
-        existing = _peer_from_map(esp_now_info->src_addr);
+        err = _peer_add_discovered(info->name, frame->src_mac, false);
+        existing = _peer_from_map(frame->src_mac);
     }
     
     if (err == ESP_OK && existing) {
@@ -102,7 +102,7 @@ static void _host_rx_auto(const esp_now_recv_info_t *esp_now_info, const fpr_con
         if (!info->has_pwk && existing->sec_state == FPR_SEC_STATE_NONE) {
             // Step 1: Client sent initial request without PWK
             // Send back device info with PWK (only if not already sent)
-            fpr_sec_host_send_pwk(esp_now_info->src_addr, existing, fpr_net.host_pwk);
+            fpr_sec_host_send_pwk(frame->src_mac, existing, fpr_net.host_pwk);
         } else if (info->has_pwk && info->has_lwk) {
             // Step 3: Client sent PWK + its own LWK
             
@@ -118,7 +118,7 @@ static void _host_rx_auto(const esp_now_recv_info_t *esp_now_info, const fpr_con
                 #endif
             } else if (existing->sec_state == FPR_SEC_STATE_PWK_SENT || existing->sec_state == FPR_SEC_STATE_NONE) {
                 // Verify PWK, store client's LWK, send acknowledgment, mark connected
-                fpr_sec_host_verify_and_ack(esp_now_info->src_addr, existing, info, fpr_net.host_pwk);
+                fpr_sec_host_verify_and_ack(frame->src_mac, existing, info, fpr_net.host_pwk);
             }
             #if (FPR_DEBUG == 1)
             else {
@@ -209,7 +209,7 @@ esp_err_t fpr_host_reject_peer(const uint8_t *peer_mac)
     return ESP_OK;
 }
 
-static void _host_rx_manual(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing)
+static void _host_rx_manual(const fpr_rx_frame_t *frame, const fpr_connect_t *info, FPR_STORE_HASH_TYPE *existing)
 {
     /* Handshake completion after approval: the client answered our PWK
      * with PWK+LWK. Finish the handshake without re-running the approval
@@ -217,9 +217,9 @@ static void _host_rx_manual(const esp_now_recv_info_t *esp_now_info, const fpr_c
      * and the peers livelock before ever connecting. */
     if (existing && existing->sec_state == FPR_SEC_STATE_PWK_SENT &&
         info->has_pwk && info->has_lwk) {
-        _peer_touch(existing, esp_now_info);
+        _peer_touch(existing, frame);
         if (fpr_net.host_pwk_valid) {
-            fpr_sec_host_verify_and_ack(esp_now_info->src_addr, existing, info, fpr_net.host_pwk);
+            fpr_sec_host_verify_and_ack(frame->src_mac, existing, info, fpr_net.host_pwk);
         }
         return;
     }
@@ -233,13 +233,13 @@ static void _host_rx_manual(const esp_now_recv_info_t *esp_now_info, const fpr_c
         } else if (existing->state != FPR_PEER_STATE_CONNECTED) {
             existing->state = FPR_PEER_STATE_PENDING;
         }
-        _peer_touch(existing, esp_now_info);
+        _peer_touch(existing, frame);
         _safe_string_copy(existing->name, info->name, sizeof(existing->name));
     } else {
         // Add new peer as pending
-        esp_err_t err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
+        esp_err_t err = _peer_add_discovered(info->name, frame->src_mac, false);
         if (err == ESP_OK) {
-            existing = _peer_from_map(esp_now_info->src_addr);
+            existing = _peer_from_map(frame->src_mac);
             if (existing) {
                 existing->state = FPR_PEER_STATE_PENDING;
             }
@@ -250,26 +250,26 @@ static void _host_rx_manual(const esp_now_recv_info_t *esp_now_info, const fpr_c
     
     // Invoke approval callback if registered
     if (fpr_net.host_config.request_cb) {
-        bool approved = fpr_net.host_config.request_cb(esp_now_info->src_addr, info->name, 0);
+        bool approved = fpr_net.host_config.request_cb(frame->src_mac, info->name, 0);
         if (approved) {
-            fpr_host_approve_peer(esp_now_info->src_addr);
+            fpr_host_approve_peer(frame->src_mac);
         } else {
-            fpr_host_reject_peer(esp_now_info->src_addr);
+            fpr_host_reject_peer(frame->src_mac);
         }
     }
 }
 
-void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+void _rx_host(const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
     #if (FPR_DEBUG_LOG_HOST_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Host received packet - len: %d, from: " MACSTR ", to: " MACSTR, 
-             len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
+             len, MAC2STR(frame->src_mac), MAC2STR(frame->dst_mac));
     #endif
     
     /* paused/size/version gates, control sanitize, peers_lock + quiesce
      * re-check — shared preamble, returns with the lock held. */
     fpr_rx_ctx_t ctx;
-    if (!_rx_begin(esp_now_info, data, len, false, &ctx)) {
+    if (!_rx_begin(frame, data, len, false, &ctx)) {
         return;
     }
     const fpr_package_t *package = ctx.package;
@@ -283,7 +283,7 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
 
     // Handle unicast messages from clients (connection requests)
     if (!is_broadcast) {
-        FPR_STORE_HASH_TYPE *existing = _peer_from_map(esp_now_info->src_addr);
+        FPR_STORE_HASH_TYPE *existing = _peer_from_map(frame->src_mac);
 
         // Only treat as connection request if:
         // 1. It's a control packet (id == -1), AND
@@ -299,7 +299,7 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
                     info->name, info->visibility);
             }
 
-            if (!_host_allow_connect(esp_now_info, info, existing)) {
+            if (!_host_allow_connect(frame, info, existing)) {
                 _peers_unlock();
                 ESP_LOGW(TAG, "Connection from %s denied", info->name);
                 return;
@@ -308,25 +308,25 @@ void _rx_host(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int 
             // Handle based on connection mode
             if (fpr_net.host_config.connection_mode == FPR_CONNECTION_AUTO) {
                 // Auto mode - immediately accept connection
-                _host_rx_auto(esp_now_info, info, existing);
+                _host_rx_auto(frame, info, existing);
             } else {
                 // Manual mode - handle connection approval
-                _host_rx_manual(esp_now_info, info, existing);
+                _host_rx_manual(frame, info, existing);
             }
         }
         else if (existing && existing->is_connected) {
             // Peer already connected - update timestamp and store application data
-            _peer_touch(existing, esp_now_info);
+            _peer_touch(existing, frame);
             #if (FPR_DEBUG == 1)
             ESP_LOGI(TAG, "Received packet from connected peer: %s (id: %d)", existing->name, package->id);
             #endif
-            _peer_store_data(esp_now_info, package);
+            _peer_store_data(frame, package);
         }
         else {
             // Data packet from unknown/disconnected peer - drop it
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Dropping data packet (id: %d) from unknown/disconnected peer " MACSTR,
-                     package->id, MAC2STR(esp_now_info->src_addr));
+                     package->id, MAC2STR(frame->src_mac));
             #endif
         }
     }
@@ -412,15 +412,15 @@ static void _host_keepalive_cb(void *key, void *value, void *user_data)
         int64_t age_us = esp_timer_get_time() - peer->last_seen;
         uint64_t age_ms = (uint64_t)FPR_US_TO_MS(age_us);
         if (age_ms > FPR_RECONNECT_TIMEOUT_MS) {
-            ESP_LOGW(TAG, "Client " MACSTR " timed out (age %llu ms) - disconnecting", MAC2STR(peer->peer_info.peer_addr), age_ms);
+            ESP_LOGW(TAG, "Client " MACSTR " timed out (age %llu ms) - disconnecting", MAC2STR(peer->mac), age_ms);
             _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
             return;
         }
 
         // Send keepalive (device info) to client to prompt a response
-        esp_err_t err = fpr_network_send_device_info(peer->peer_info.peer_addr);
+        esp_err_t err = fpr_network_send_device_info(peer->mac);
         if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Host keepalive send to " MACSTR " failed: %s", MAC2STR(peer->peer_info.peer_addr), esp_err_to_name(err));
+            ESP_LOGW(TAG, "Host keepalive send to " MACSTR " failed: %s", MAC2STR(peer->mac), esp_err_to_name(err));
         }
     }
 }

@@ -16,6 +16,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Forward decl — the full transport vtable lives in fpr_transport.h. */
+typedef struct fpr_transport fpr_transport_t;
+
 #define MAC_ADDRESS_LENGTH 6
 #define PEER_NAME_MAX_LENGTH 32
 
@@ -179,6 +182,10 @@ typedef struct {
     uint8_t channel;            // WiFi channel (1-14, 0 = auto/current)
     fpr_power_mode_t power_mode; // Power management mode
     fpr_queue_mode_t queue_mode; // Default queue mode for peers
+    /* Radio backend; NULL selects fpr_transport_espnow(). Tests/SIL
+     * inject an in-memory transport — the core never touches esp_now
+     * directly. */
+    const fpr_transport_t *transport;
 } fpr_init_config_t;
 
 /**
@@ -187,5 +194,6 @@ typedef struct {
 #define FPR_INIT_CONFIG_DEFAULT() { \
     .channel = 0, \
     .power_mode = FPR_POWER_NORMAL, \
-    .queue_mode = FPR_QUEUE_MODE_NORMAL \
+    .queue_mode = FPR_QUEUE_MODE_NORMAL, \
+    .transport = NULL \
 }

@@ -10,6 +10,7 @@
 
 #include "fpr/internal/rx.h"
 #include "fpr/internal/fpr_handle.h"
+#include "fpr/internal/codec.h"
 #include <string.h>
 
 /* Stat increments go through peers_lock like every other stats write;
@@ -25,7 +26,7 @@ static void _rx_drop(bool count_drops)
     _peers_unlock();
 }
 
-bool _rx_begin(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len,
+bool _rx_begin(const fpr_rx_frame_t *frame, const uint8_t *data, int len,
                bool count_drops, fpr_rx_ctx_t *ctx)
 {
     if (fpr_net.paused) {
@@ -46,9 +47,15 @@ bool _rx_begin(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int
         _peers_unlock();
     }
 
-    const fpr_package_t *package = (const fpr_package_t *)data;
+    /* Decode into handler-owned storage — the driver buffer stays
+     * untouched and every path below reads the same snapshot. */
+    if (!fpr_codec_decode(data, (size_t)len, &ctx->decoded)) {
+        _rx_drop(count_drops);
+        return false;
+    }
+    const fpr_package_t *package = &ctx->decoded;
 
-    if (!fpr_version_handle_version(esp_now_info, data, len, package->version)) {
+    if (!fpr_version_handle_version(frame, data, len, package->version)) {
         _rx_drop(count_drops);
         return false;
     }
@@ -62,7 +69,7 @@ bool _rx_begin(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int
         ctx->control.name[FPR_CONNECT_NAME_SIZE - 1] = '\0';
     }
     ctx->package = package;
-    ctx->is_broadcast = is_broadcast_address(esp_now_info->des_addr);
+    ctx->is_broadcast = is_broadcast_address(frame->dst_mac);
 
     /* Serialize the peer-map region against remove/clear on other tasks.
      * Recursive: mode handlers and their callbacks re-enter peer APIs on

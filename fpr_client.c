@@ -61,18 +61,18 @@ bool fpr_client_is_connected(void)
     return connected;
 }
 
-static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const fpr_connect_t *info)
+static void _client_discover_host(const fpr_rx_frame_t *frame, const fpr_connect_t *info)
 {
-    const int8_t rssi = _rx_rssi(esp_now_info);
+    const int8_t rssi = _rx_rssi(frame);
 
     // Invoke discovery callback if registered
     if (fpr_net.client_config.discovery_cb) {
-        fpr_net.client_config.discovery_cb(esp_now_info->src_addr, info->name, rssi);
+        fpr_net.client_config.discovery_cb(frame->src_mac, info->name, rssi);
     }
 
     // Check if we're already connected to a DIFFERENT host
     // Allow reconnection to the SAME host (e.g., after restart)
-    FPR_STORE_HASH_TYPE *existing = _peer_from_map(esp_now_info->src_addr);
+    FPR_STORE_HASH_TYPE *existing = _peer_from_map(frame->src_mac);
     if (!existing && fpr_client_is_connected()) {
         #if (FPR_DEBUG == 1)
         ESP_LOGW(TAG, "Already connected to a different host - ignoring %s", info->name);
@@ -84,14 +84,14 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
     // treat it as an explicit "decline" and do not auto-connect.
     if (fpr_net.client_config.connection_mode == FPR_CONNECTION_MANUAL) {
         if (fpr_net.client_config.selection_cb != NULL) {
-            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name, rssi);
+            bool should_connect = fpr_net.client_config.selection_cb(frame->src_mac, info->name, rssi);
             if (!should_connect) {
                 #if (FPR_DEBUG == 1)
                 ESP_LOGI(TAG, "Application declined connection to host: %s", info->name);
                 #endif
                 // Still add as discovered but don't initiate connection
                 if (!existing) {
-                    _peer_add_discovered(info->name, esp_now_info->src_addr, false);
+                    _peer_add_discovered(info->name, frame->src_mac, false);
                 }
                 return;
             }
@@ -102,7 +102,7 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
             #endif
             // Add as discovered but do not initiate handshake
             if (!existing) {
-                _peer_add_discovered(info->name, esp_now_info->src_addr, false);
+                _peer_add_discovered(info->name, frame->src_mac, false);
             }
             return;
         }
@@ -111,12 +111,12 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
     // Add as discovered FIRST (this registers the peer with ESP-NOW) - skip if already exists
     esp_err_t err = ESP_OK;
     if (!existing) {
-        err = _peer_add_discovered(info->name, esp_now_info->src_addr, false);
+        err = _peer_add_discovered(info->name, frame->src_mac, false);
     }
 
     if (err == ESP_OK) {
         // Send initial discovery request without keys
-        _client_send_request(esp_now_info->src_addr, "initial discovery");
+        _client_send_request(frame->src_mac, "initial discovery");
 
         if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
             ESP_LOGI(TAG, "Host discovered: %s (waiting for PWK)", info->name);
@@ -128,17 +128,17 @@ static void _client_discover_host(const esp_now_recv_info_t *esp_now_info, const
     }
 }
 
-void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+void _rx_client(const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
     #if (FPR_DEBUG_LOG_CLIENT_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Client received packet - len: %d, from: " MACSTR ", to: " MACSTR,
-             len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
+             len, MAC2STR(frame->src_mac), MAC2STR(frame->dst_mac));
     #endif
     
     /* paused/size/version gates, control sanitize, peers_lock + quiesce
      * re-check — shared preamble, returns with the lock held. */
     fpr_rx_ctx_t ctx;
-    if (!_rx_begin(esp_now_info, data, len, false, &ctx)) {
+    if (!_rx_begin(frame, data, len, false, &ctx)) {
         return;
     }
     const fpr_package_t *package = ctx.package;
@@ -149,12 +149,12 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
     // Handle broadcast discovery messages from host (always control packets)
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
-        FPR_STORE_HASH_TYPE *known_host = _peer_from_map(esp_now_info->src_addr);
+        FPR_STORE_HASH_TYPE *known_host = _peer_from_map(frame->src_mac);
         if (known_host == NULL) {
             #if (FPR_DEBUG == 1)
-            ESP_LOGI(TAG, "Found new host: %s (" MACSTR ")", info->name, MAC2STR(esp_now_info->src_addr));
+            ESP_LOGI(TAG, "Found new host: %s (" MACSTR ")", info->name, MAC2STR(frame->src_mac));
             #endif
-            _client_discover_host(esp_now_info, info);
+            _client_discover_host(frame, info);
         } else {
             // Known host - check if we need to reconnect (e.g., after host restart)
             // If host restarted, it lost our connection info and is broadcasting again
@@ -167,18 +167,18 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
                              info->name, known_host->sec_state, known_host->is_connected);
                     // Reset connection/session state and reconnect
                     _reset_peer_connection(known_host, FPR_PEER_STATE_DISCOVERED);
-                    _peer_touch(known_host, esp_now_info);
+                    _peer_touch(known_host, frame);
 
                     // Decide whether to initiate handshake automatically based on mode
                     if (fpr_net.client_config.connection_mode == FPR_CONNECTION_AUTO) {
-                        _client_send_request(esp_now_info->src_addr, "reconnection request");
+                        _client_send_request(frame->src_mac, "reconnection request");
                     } else {
                         // Manual mode: consult selection_cb if present; if NULL, do not auto-reconnect
                         if (fpr_net.client_config.selection_cb) {
-                            bool should_connect = fpr_net.client_config.selection_cb(esp_now_info->src_addr, info->name,
-                                                                                     _rx_rssi(esp_now_info));
+                            bool should_connect = fpr_net.client_config.selection_cb(frame->src_mac, info->name,
+                                                                                     _rx_rssi(frame));
                             if (should_connect) {
-                                _client_send_request(esp_now_info->src_addr, "reconnection request");
+                                _client_send_request(frame->src_mac, "reconnection request");
                             } else {
                                 #if (FPR_DEBUG == 1)
                                 ESP_LOGI(TAG, "Manual mode: application declined reconnect to host: %s", info->name);
@@ -200,10 +200,10 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
         }
     } else if (!is_broadcast) {
         // Handle unicast response from host (security handshake or data)
-        FPR_STORE_HASH_TYPE *existing = _peer_from_map(esp_now_info->src_addr);
+        FPR_STORE_HASH_TYPE *existing = _peer_from_map(frame->src_mac);
         if (existing) {
             // Update timestamp first for any unicast from known peer
-            _peer_touch(existing, esp_now_info);
+            _peer_touch(existing, frame);
             
             // Handle security handshake (WiFi-style) - only for control packets (id == -1)
             // In manual mode, host initiates handshake after approval
@@ -223,7 +223,7 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
                     // Only process if we haven't already received and processed a PWK
                     if (existing->sec_state < FPR_SEC_STATE_PWK_RECEIVED) {
                         // Generate own LWK and send PWK+LWK back
-                        fpr_sec_client_handle_pwk(esp_now_info->src_addr, existing, info);
+                        fpr_sec_client_handle_pwk(frame->src_mac, existing, info);
                     }
                     #if (FPR_DEBUG == 1)
                     else {
@@ -249,7 +249,7 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
                     // Process ACK if we're in the correct state (LWK_SENT) or earlier
                     if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
                         // Verify and mark connected
-                        fpr_sec_client_verify_ack(esp_now_info->src_addr, existing, info);
+                        fpr_sec_client_verify_ack(frame->src_mac, existing, info);
                     }
                     #if (FPR_DEBUG == 1)
                     else {
@@ -266,7 +266,7 @@ void _rx_client(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
                 #if (FPR_DEBUG == 1)
                 ESP_LOGI(TAG, "Received data from connected host: %s (id: %d)", existing->name, package->id);
                 #endif
-                _peer_store_data(esp_now_info, package);
+                _peer_store_data(frame, package);
             }
         }
     }
@@ -285,7 +285,7 @@ static void _host_find_cb(void *key, void *value, void *user_data)
     const bool upgrade = ctx->found && !ctx->found_connected &&
                          peer && peer->state == FPR_PEER_STATE_CONNECTED;
     if (usable && (!ctx->found || upgrade)) {
-        memcpy(ctx->mac, peer->peer_info.peer_addr, MAC_ADDRESS_LENGTH);
+        memcpy(ctx->mac, peer->mac, MAC_ADDRESS_LENGTH);
         if (ctx->name_size > 0) {
             // copy up to caller-provided size (reserve space for NUL)
             size_t copy_len = ctx->name_size - 1;

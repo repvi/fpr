@@ -13,6 +13,7 @@
 
 #include "fpr/fpr.h"
 #include "fpr/internal/rx.h"
+#include "fpr/internal/codec.h"
 #include "esp_log.h"
 #include "esp_check.h"
 
@@ -65,18 +66,23 @@ static bool _should_forward_packet(const fpr_package_t *package, bool is_for_me,
  * learning, replay protection and TTL termination downstream. */
 static esp_err_t _forward_package(const uint8_t *next_hop, const fpr_package_t *package)
 {
-    esp_err_t result = esp_now_send(next_hop, (const uint8_t *)package, sizeof(*package));
+    uint8_t fwd_buf[sizeof(*package)];
+    size_t fwd_len = fpr_codec_encode(package, fwd_buf, sizeof(fwd_buf));
+    const fpr_transport_t *t = _transport();
+    esp_err_t result = fwd_len == 0 ? ESP_ERR_INVALID_SIZE
+                       : t == NULL ? ESP_ERR_INVALID_STATE
+                       : t->send(t->ctx, next_hop, fwd_buf, fwd_len);
     /* _rx_begin left the lock held; _stats_count_send re-takes it
      * recursively — no implicit "callers must hold" coupling. */
     _stats_count_send(result);
     return result;
 }
 
-void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+void _rx_extender(const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
     #if (FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Extender received packet - len: %d, from: " MACSTR ", to: " MACSTR,
-             len, MAC2STR(esp_now_info->src_addr), MAC2STR(esp_now_info->des_addr));
+             len, MAC2STR(frame->src_mac), MAC2STR(frame->dst_mac));
     #endif
     
     /* paused/size/version gates, control sanitize, peers_lock + quiesce
@@ -84,7 +90,7 @@ void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
      * accounting (count_drops) charges rejects to packets_dropped and
      * counts size-valid packets in packets_received. */
     fpr_rx_ctx_t ctx;
-    if (!_rx_begin(esp_now_info, data, len, true, &ctx)) {
+    if (!_rx_begin(frame, data, len, true, &ctx)) {
         return;
     }
     /* Forwarding adjusts hop metadata, not the driver-owned RX buffer. */
@@ -95,20 +101,20 @@ void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
     // Update or add peer liveness info — serialize against remove/clear on
     // other tasks (peer stores are heap-owned by the map). The sender is a
     // direct neighbor: its distance is always 1 hop.
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(esp_now_info->src_addr);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(frame->src_mac);
     if (peer) {
-        _peer_touch(peer, esp_now_info);
+        _peer_touch(peer, frame);
         peer->packets_received++;
         if (peer->hop_count == 0) {
             peer->hop_count = 1;
         }
     } else {
         // Add new peer
-        _peer_add(esp_now_info->src_addr, NULL, false);
-        peer = _peer_from_map(esp_now_info->src_addr);
+        _peer_add(frame->src_mac, NULL, false);
+        peer = _peer_from_map(frame->src_mac);
         if (peer) {
             peer->hop_count = 1;
-            _peer_touch(peer, esp_now_info);
+            _peer_touch(peer, frame);
         }
     }
 
@@ -131,9 +137,9 @@ void _rx_extender(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, 
             uint8_t via_hops = package->hop_count + 1;
             if (route->hop_count == 0 || via_hops < route->hop_count) {
                 route->hop_count = via_hops;
-                memcpy(route->next_hop_mac, esp_now_info->src_addr, 6);
+                memcpy(route->next_hop_mac, frame->src_mac, 6);
                 ESP_LOGI(TAG, "Learned route to " MACSTR " via " MACSTR " (hops: %d)",
-                         MAC2STR(package->origin_mac), MAC2STR(esp_now_info->src_addr),
+                         MAC2STR(package->origin_mac), MAC2STR(frame->src_mac),
                          route->hop_count);
             }
             route->last_seen = esp_timer_get_time();

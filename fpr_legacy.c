@@ -27,15 +27,15 @@ bool fpr_legacy_is_v0_packet(const uint8_t *data, int len)
     return (data != NULL && len >= FPR_V0_MIN_PACKET_SIZE);
 }
 
-bool fpr_legacy_handle_protocol_v0(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+bool fpr_legacy_handle_protocol_v0(const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
-    if (esp_now_info == NULL || data == NULL) {
+    if (frame == NULL || data == NULL) {
         ESP_LOGE(TAG, "Invalid arguments to legacy handler");
         return false;
     }
     
     ESP_LOGW(TAG, "Processing legacy (v0) packet from " MACSTR " - len: %d",
-             MAC2STR(esp_now_info->src_addr), len);
+             MAC2STR(frame->src_mac), len);
     
     // Basic size check - v0 packets should still meet minimum size
     if (len < FPR_V0_MIN_PACKET_SIZE) {
@@ -67,7 +67,7 @@ bool fpr_legacy_handle_protocol_v0(const esp_now_recv_info_t *esp_now_info, cons
     return true;
 }
 
-bool fpr_legacy_handle_protocol_version(code_version_t version, const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len) 
+bool fpr_legacy_handle_protocol_version(code_version_t version, const fpr_rx_frame_t *frame, const uint8_t *data, int len) 
 {
     // Handle legacy v0 packets (version=0)
     return false;

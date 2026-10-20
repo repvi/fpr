@@ -12,7 +12,9 @@ set(FPR_SOURCES
     "fpr_peers.c"
     "fpr_send.c"
     "fpr_diag.c"
+    "fpr_transport_espnow.c"
 
+    "internal_src/codec.c"
     "internal_src/helpers.c"
     "internal_src/rx.c"
 )

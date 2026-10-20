@@ -16,7 +16,7 @@
 
 static const char *TAG = "fpr_new";
 
-bool fpr_new_handle_protocol_version(code_version_t version, const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len)
+bool fpr_new_handle_protocol_version(code_version_t version, const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
     (void)data;
     (void)len;
@@ -26,7 +26,7 @@ bool fpr_new_handle_protocol_version(code_version_t version, const esp_now_recv_
              CODE_VERSION_MAJOR(version),
              CODE_VERSION_MINOR(version),
              CODE_VERSION_PATCH(version),
-             MAC2STR(esp_now_info->src_addr));
+             MAC2STR(frame->src_mac));
     
     // For now, reject future versions as we don't know how to handle them
     // When future protocol versions are defined, add handlers here

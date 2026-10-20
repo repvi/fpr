@@ -7,7 +7,6 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
-#include "esp_now.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
@@ -92,7 +91,7 @@ size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data)
      * valid even if the callback removes the peer mid-iteration (the
      * store is just marked dead, freed at release). */
     for (size_t i = 0; i < n; i++) {
-        callback(stores[i]->peer_info.peer_addr, stores[i], user_data);
+        callback(stores[i]->mac, stores[i], user_data);
         _peer_store_release(stores[i]);
     }
     heap_caps_free(stores);
@@ -282,7 +281,7 @@ static void _peer_by_name_cb(void *key, void *value, void *user_data)
     
     if (peer && !ctx->found) {
         if (strncmp(peer->name, ctx->name, PEER_NAME_MAX_LENGTH) == 0) {
-            memcpy(ctx->mac_out, peer->peer_info.peer_addr, MAC_ADDRESS_LENGTH);
+            memcpy(ctx->mac_out, peer->mac, MAC_ADDRESS_LENGTH);
             ctx->found = true;
         }
     }
@@ -317,8 +316,11 @@ static void _peer_clear_cb(void *key, void *value, void *user_data)
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     
     if (peer) {
-        // Remove from ESP-NOW
-        esp_now_del_peer(mac);
+        // Remove from the transport peer table
+        const fpr_transport_t *t = _transport();
+        if (t) {
+            t->del_peer(t->ctx, mac);
+        }
         _peer_store_free_or_defer(peer);
     }
 }

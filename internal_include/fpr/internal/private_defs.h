@@ -25,8 +25,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
-#include "esp_now.h"
 #include "esp_mac.h"
+#include "fpr/fpr_transport.h"
 #include <string.h>
 
 #define FPR_CONNECT_NAME_SIZE 32
@@ -36,9 +36,24 @@
 
 #define FPR_DEFAULT_MAX_HOPS 10
 
+/* Byte-exact stand-in for esp_now_peer_info_t: fpr_connect_t goes on
+ * the wire as a raw struct inside fpr_package_t, so this layout is
+ * part of the protocol — do not reorder, resize, or "improve" it.
+ * Fields mirror ESP-NOW's (6B MAC, 16B LMK, u8 channel, int ifidx,
+ * bool encrypt, void* priv) so the layout matches on every target.
+ * The codec test pins every offset. */
+typedef struct {
+    uint8_t peer_addr[6];
+    uint8_t lmk[16];
+    uint8_t channel;
+    int ifidx;
+    bool encrypt;
+    void *priv;
+} fpr_wire_peer_info_t;
+
 typedef struct {
     char name[FPR_CONNECT_NAME_SIZE];
-    esp_now_peer_info_t peer_info;
+    fpr_wire_peer_info_t peer_info;
     fpr_visibility_t visibility;
     uint8_t pwk[FPR_KEY_SIZE];  // Primary Working Key
     uint8_t lwk[FPR_KEY_SIZE];  // Local Working Key
@@ -54,7 +69,7 @@ typedef enum {
 } fpr_package_type_t;
 
 typedef struct {
-    esp_now_peer_info_t peer_info;
+    uint8_t mac[MAC_ADDRESS_LENGTH];   // Peer MAC (hashmap key)
     char name[PEER_NAME_MAX_LENGTH];
     QueueHandle_t response_queue;
     fpr_security_keys_t security;  // Security keys for this peer
@@ -119,7 +134,8 @@ typedef struct {
     uint8_t reserved[10]; // Padding for alignment (reduced to account for sequence_num)
 } fpr_package_t;
 
-_Static_assert(ESP_NOW_MAX_DATA_LEN > sizeof(fpr_package_t), "ESP_NOW_MAX_DATA_LEN must be greater than sizeof(fpr_package_t)");
+/* MTU check lives in fpr_transport_espnow.c (the only file that knows
+ * the transport's max frame). */
 
 typedef struct {
     HashMap peers_map;
@@ -175,6 +191,13 @@ typedef struct {
     
     // Queue management
     fpr_queue_mode_t default_queue_mode;  // Default queue mode for new peers
+
+    /* Radio port — every esp_now/esp_wifi call goes through here
+     * (fpr_transport_espnow by default; a fake under tests). */
+    const fpr_transport_t *transport;
+    /* Mode protocol handler, installed by fpr_network_set_mode. */
+    void (*rx_handler)(const fpr_rx_frame_t *frame,
+                       const uint8_t *data, int len);
 } fpr_network_t;
 
 

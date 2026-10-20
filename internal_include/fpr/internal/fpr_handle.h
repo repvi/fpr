@@ -16,6 +16,7 @@
  */
 
 #include "fpr/fpr_lts.h"
+#include "fpr/fpr_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,13 +31,13 @@ extern "C" {
  * - v1.x (current): Processed directly
  * - v2+ (future): Routed to fpr_new_handle_protocol_version()
  * 
- * @param esp_now_info ESP-NOW receive information
+ * @param frame Transport receive frame (source/dest MAC, RSSI)
  * @param data Raw packet data
  * @param len Packet length
  * @param version Protocol version from packet header
  * @return true if packet should be processed, false if rejected
  */
-bool fpr_version_handle_version(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int len, code_version_t version);
+bool fpr_version_handle_version(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version);
 
 #ifdef __cplusplus
 }

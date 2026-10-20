@@ -29,7 +29,6 @@
  */
 
 #include "fpr/fpr_version.h"
-#include "esp_now.h"
 #include <stdbool.h>
 #include <stddef.h>
 

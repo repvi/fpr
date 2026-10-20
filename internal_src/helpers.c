@@ -13,7 +13,6 @@
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_now.h"
 
 static const char *TAG = "fpr_helpers";
 
@@ -110,10 +109,10 @@ static bool _store_data_with_mode(FPR_STORE_HASH_TYPE *store, const fpr_package_
     return true;
 }
 
-void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package_t *data)
+void _peer_store_data(const fpr_rx_frame_t *frame, const fpr_package_t *data)
 {
     fpr_net.stats.packets_received++;
-    const uint8_t *peer_address = esp_now_info->src_addr;
+    const uint8_t *peer_address = frame->src_mac;
     /* Recursive: callers in the RX path already hold peers_lock, and the
      * data_callback below may call fpr_network_remove_peer() which takes
      * it again on this same task. */
@@ -121,7 +120,7 @@ void _peer_store_data(const esp_now_recv_info_t *esp_now_info, const fpr_package
     FPR_STORE_HASH_TYPE *store = _peer_from_map(peer_address);
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
-        _peer_touch(store, esp_now_info);
+        _peer_touch(store, frame);
         
         // Replay protection: wrap-aware sequence check.
         // - seq 0 is always allowed (legacy/handshake packets)
@@ -250,18 +249,17 @@ esp_err_t _peer_add(const uint8_t *peer_mac, const char *name, bool is_connected
     store->receiving_fragmented = false;
     store->fragment_seq_num = 0;
     
-    // Setup peer_info with the actual MAC - this creates a persistent copy
-    memcpy(store->peer_info.peer_addr, peer_mac, 6);
-    fpr_set_peer_info(&store->peer_info);
-    
-    // Use the persistent MAC copy (peer_info.peer_addr) as the hashmap key
-    // This ensures the key remains valid as long as the peer entry exists
-    bool success = hashmap_put(&fpr_net.peers_map, store->peer_info.peer_addr, store);
+    // Keep a persistent MAC copy — it is the hashmap key, so it must
+    // outlive the caller's buffer.
+    memcpy(store->mac, peer_mac, MAC_ADDRESS_LENGTH);
+
+    bool success = hashmap_put(&fpr_net.peers_map, store->mac, store);
     if (success) {
-        esp_now_del_peer(store->peer_info.peer_addr);
-        esp_err_t err = esp_now_add_peer(&store->peer_info);
+        const fpr_transport_t *t = _transport();
+        esp_err_t err = t ? t->add_peer(t->ctx, store->mac, 0, false)
+                          : ESP_ERR_INVALID_STATE;
         if (err != ESP_OK) {
-            hashmap_remove(&fpr_net.peers_map, store->peer_info.peer_addr);
+            hashmap_remove(&fpr_net.peers_map, store->mac);
             _peer_store_free_or_defer(store);
             _peers_unlock();
             return err;
@@ -286,7 +284,7 @@ esp_err_t _peer_add_discovered(const char *name, const uint8_t *address, bool is
 // Helper: Copy peer data to info structure
 void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
 {
-    memcpy(info->mac, peer->peer_info.peer_addr, 6);
+    memcpy(info->mac, peer->mac, MAC_ADDRESS_LENGTH);
     _safe_string_copy(info->name, peer->name, sizeof(info->name));
     info->is_connected = peer->is_connected;
     info->state = peer->state;
@@ -313,7 +311,8 @@ esp_err_t _peer_remove(const uint8_t *peer_mac)
         }
         _peer_store_free_or_defer(var);
     }
-    result = esp_now_del_peer(mac);
+    const fpr_transport_t *t = _transport();
+    result = t ? t->del_peer(t->ctx, mac) : ESP_ERR_INVALID_STATE;
     _peers_unlock();
     return result;
 }

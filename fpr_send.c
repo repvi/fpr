@@ -12,13 +12,13 @@
 #include "esp_check.h"
 
 static const char *TAG = "fpr_send";
-esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options)
+esp_err_t fpr_node_send_with_options(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options)
 {
     ESP_RETURN_ON_FALSE(data != NULL && size > 0, ESP_ERR_INVALID_ARG, TAG, "Invalid data or size");
     ESP_RETURN_ON_FALSE(options != NULL, ESP_ERR_INVALID_ARG, TAG, "Options cannot be NULL");
     
     // Check if network is paused
-    if (fpr_net.paused) {
+    if (net->paused) {
         ESP_LOGW(TAG, "Network is paused - send operation blocked");
         return ESP_ERR_INVALID_STATE;
     }
@@ -34,9 +34,9 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
      * rx path's handshake replies, and reconnect tasks all bump this.
      * Take the (recursive) lock so cross-context sends can't mint
      * duplicates that a receiver's replay check would drop. */
-    _peers_lock();
-    uint32_t seq_num = ++fpr_net.tx_sequence_num;
-    _peers_unlock();
+    _peers_lock(net);
+    uint32_t seq_num = ++net->tx_sequence_num;
+    _peers_unlock(net);
     
     while (data_remaining > 0) {
         fpr_package_t package = {0};
@@ -60,7 +60,7 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
         memcpy(&package.protocol, data_ptr, chunk_size);
         
         // Initialize routing fields
-        memcpy(package.origin_mac, fpr_net.mac, 6);
+        memcpy(package.origin_mac, net->mac, 6);
         if (peer_address) {
             memcpy(package.dest_mac, peer_address, 6);
         } else {
@@ -72,11 +72,11 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
         
         uint8_t send_buf[sizeof(package)];
         size_t send_len = fpr_codec_encode(&package, send_buf, sizeof(send_buf));
-        const fpr_transport_t *t = _transport();
+        const fpr_transport_t *t = _transport(net);
         last_result = send_len == 0 ? ESP_ERR_INVALID_SIZE
                         : t == NULL ? ESP_ERR_INVALID_STATE
                         : t->send(t->ctx, peer_address, send_buf, send_len);
-        _stats_count_send(last_result);
+        _stats_count_send(net, last_result);
         if (last_result != ESP_OK) {
             // Log specific error for debugging
             if (last_result == ESP_ERR_NO_MEM) {
@@ -101,60 +101,60 @@ esp_err_t fpr_send_with_options(const uint8_t *peer_address, const void *data, i
     return last_result;
 }
 
-// Thin wrapper: fpr_send_with_options() fragments payloads larger than
+// Thin wrapper: fpr_node_send_with_options(net, ) fragments payloads larger than
 // the per-packet protocol window automatically.
-static esp_err_t fpr_network_send_helper(const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
+static esp_err_t fpr_node_send_helper(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     fpr_send_options_t options = {
         .package_id = package_id,
         .max_hops = FPR_DEFAULT_MAX_HOPS
     };
-    return fpr_send_with_options(peer_address, data, size, &options);
+    return fpr_node_send_with_options(net, peer_address, data, size, &options);
 }
 
-esp_err_t fpr_network_send_to_peer(const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_node_send(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     ESP_RETURN_ON_FALSE(peer_address != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer address is NULL");
 
     // Validate peer exists and is connected (unless it's a control packet for handshake)
     if (package_id != FPR_PACKET_ID_CONTROL) {
-        _peers_lock();
-        FPR_STORE_HASH_TYPE *peer = _peer_from_map(peer_address);
+        _peers_lock(net);
+        FPR_STORE_HASH_TYPE *peer = _peer_from_map(net, peer_address);
         if (peer == NULL) {
-            _peers_unlock();
+            _peers_unlock(net);
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Attempting to send to unknown peer " MACSTR, MAC2STR(peer_address));
             #endif
             return ESP_ERR_NOT_FOUND;
         }
         if (!peer->is_connected) {
-            _peers_unlock();
+            _peers_unlock(net);
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Attempting to send to disconnected peer %s (" MACSTR ")", peer->name, MAC2STR(peer_address));
             #endif
             return ESP_ERR_INVALID_STATE;
         }
-        _peers_unlock();
+        _peers_unlock(net);
     }
 
-    return fpr_network_send_helper(peer_address, data, size, package_id);
+    return fpr_node_send_helper(net, peer_address, data, size, package_id);
 }
 
-esp_err_t fpr_network_broadcast(const void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_node_broadcast(fpr_node_t *net, const void *data, int size, fpr_package_id_t package_id)
 {
     uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    return fpr_network_send_helper(broadcast_mac, data, size, package_id);
+    return fpr_node_send_helper(net, broadcast_mac, data, size, package_id);
 }
 
 // Create connection info with optional security keys
 // used by the handshake code (declared in internal/helpers.h)
-fpr_connect_t _make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk)
+fpr_connect_t _make_fpr_info_with_keys(fpr_node_t *net, bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk)
 {
     fpr_connect_t info = {0}; // Zero-initialize
-    _safe_string_copy(info.name, fpr_net.name, sizeof(info.name));
-    memcpy(info.peer_info.peer_addr, fpr_net.mac, 6);
+    _safe_string_copy(info.name, net->name, sizeof(info.name));
+    memcpy(info.peer_info.peer_addr, net->mac, 6);
     fpr_set_peer_info(&info.peer_info); // Initialize peer_info properly
-    info.visibility = fpr_net.access_state;
+    info.visibility = net->access_state;
     
     // Include PWK if requested and available
     if (include_pwk && pwk) {
@@ -175,20 +175,20 @@ fpr_connect_t _make_fpr_info_with_keys(bool include_pwk, bool include_lwk, const
     return info;
 }
 
-static fpr_connect_t make_fpr_info(void)
+static fpr_connect_t make_fpr_info(fpr_node_t *net)
 {
     // No keys by default
-    return _make_fpr_info_with_keys(false, false, NULL, NULL);
+    return _make_fpr_info_with_keys(net, false, false, NULL, NULL);
 }
 
-esp_err_t fpr_network_send_device_info(const uint8_t *peer_address)
+esp_err_t fpr_node_send_device_info(fpr_node_t *net, const uint8_t *peer_address)
 {
-    fpr_connect_t info = make_fpr_info();
-    return fpr_network_send_to_peer(peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
+    fpr_connect_t info = make_fpr_info(net);
+    return fpr_node_send(net, peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }
 
-esp_err_t fpr_network_broadcast_device_info(void)
+esp_err_t fpr_node_broadcast_device_info(fpr_node_t *net)
 {
-    fpr_connect_t info = make_fpr_info();
-    return fpr_network_broadcast((void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
+    fpr_connect_t info = make_fpr_info(net);
+    return fpr_node_broadcast(net, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }

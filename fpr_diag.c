@@ -30,32 +30,33 @@ void fpr_get_protocol_version_string(char *buf, size_t buf_size)
     }
 }
 
-void fpr_get_network_stats(fpr_network_stats_t *stats)
+void fpr_node_get_stats(fpr_node_t *net, fpr_network_stats_t *stats)
 {
     if (stats) {
         /* Counters are written under peers_lock by the rx/send paths —
          * read the whole block inside it or the snapshot can tear. */
-        _peers_lock();
-        stats->packets_sent = fpr_net.stats.packets_sent;
-        stats->packets_received = fpr_net.stats.packets_received;
-        stats->packets_forwarded = fpr_net.stats.packets_forwarded;
-        stats->packets_dropped = fpr_net.stats.packets_dropped;
-        stats->send_failures = fpr_net.stats.send_failures;
-        stats->replay_attacks_blocked = fpr_net.stats.replay_attacks_blocked;
-        stats->peer_count = hashmap_size(&fpr_net.peers_map);
-        _peers_unlock();
+        _peers_lock(net);
+        stats->packets_sent = net->stats.packets_sent;
+        stats->packets_received = net->stats.packets_received;
+        stats->packets_forwarded = net->stats.packets_forwarded;
+        stats->packets_dropped = net->stats.packets_dropped;
+        stats->send_failures = net->stats.send_failures;
+        stats->replay_attacks_blocked = net->stats.replay_attacks_blocked;
+        stats->peer_count = hashmap_size(&net->peers_map);
+        _peers_unlock(net);
     }
 }
 
-void fpr_reset_network_stats(void)
+void fpr_node_reset_stats(fpr_node_t *net)
 {
-    _peers_lock();
-    memset(&fpr_net.stats, 0, sizeof(fpr_net.stats));
-    _peers_unlock();
+    _peers_lock(net);
+    memset(&net->stats, 0, sizeof(net->stats));
+    _peers_unlock(net);
     ESP_LOGI(TAG, "Network statistics reset");
 }
 
 typedef struct {
+    fpr_node_t *net;
     uint32_t stale_timeout_ms;
     size_t removed_count;
 } route_cleanup_ctx_t;
@@ -72,7 +73,7 @@ static void _route_peer_stale_cb(void *key, void *value, void *user_data)
         if (age_ms > ctx->stale_timeout_ms) {
             ESP_LOGI(TAG, "Removing stale route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
-            _peer_remove(mac);
+            _peer_remove(ctx->net, mac);
             ctx->removed_count++;
         }
     }
@@ -90,24 +91,25 @@ static void _route_stale_cb(void *key, void *value, void *user_data)
         if (age_ms > ctx->stale_timeout_ms) {
             ESP_LOGI(TAG, "Removing stale extender route to " MACSTR " (age: %llu ms)",
                      MAC2STR(mac), (unsigned long long)age_ms);
-            hashmap_remove(&fpr_net.routes_map, mac);
+            hashmap_remove(&ctx->net->routes_map, mac);
             heap_caps_free(route);
             ctx->removed_count++;
         }
     }
 }
 
-size_t fpr_cleanup_stale_routes(uint32_t timeout_ms)
+size_t fpr_node_cleanup_stale_routes(fpr_node_t *net, uint32_t timeout_ms)
 {
     route_cleanup_ctx_t ctx = {
+        .net = net,
         .stale_timeout_ms = timeout_ms,
         .removed_count = 0
     };
 
-    _peers_lock();
-    hashmap_foreach(&fpr_net.peers_map, _route_peer_stale_cb, &ctx);
-    hashmap_foreach(&fpr_net.routes_map, _route_stale_cb, &ctx);
-    _peers_unlock();
+    _peers_lock(net);
+    hashmap_foreach(&net->peers_map, _route_peer_stale_cb, &ctx);
+    hashmap_foreach(&net->routes_map, _route_stale_cb, &ctx);
+    _peers_unlock(net);
 
     if (ctx.removed_count > 0) {
         ESP_LOGI(TAG, "Cleaned up %zu stale routes", ctx.removed_count);
@@ -116,18 +118,18 @@ size_t fpr_cleanup_stale_routes(uint32_t timeout_ms)
     return ctx.removed_count;
 }
 
-void fpr_print_route_table(void)
+void fpr_node_print_route_table(fpr_node_t *net)
 {
-    _peers_lock();
-    size_t peer_count = hashmap_size(&fpr_net.peers_map);
+    _peers_lock(net);
+    size_t peer_count = hashmap_size(&net->peers_map);
     ESP_LOGI(TAG, "========== ROUTE TABLE (%zu peers) ==========", peer_count);
 
     if (peer_count == 0) {
-        _peers_unlock();
+        _peers_unlock(net);
         ESP_LOGI(TAG, "  (empty)");
         return;
     }
-    _peers_unlock();
+    _peers_unlock(net);
 
     fpr_peer_info_t *peers = heap_caps_malloc(peer_count * sizeof(fpr_peer_info_t), MALLOC_CAP_DEFAULT);
     if (!peers) {
@@ -135,7 +137,7 @@ void fpr_print_route_table(void)
         return;
     }
 
-    size_t actual = fpr_list_all_peers(peers, peer_count);
+    size_t actual = fpr_node_list_peers(net, peers, peer_count);
     for (size_t i = 0; i < actual; i++) {
         const char *state_str = "UNKNOWN";
         switch (peers[i].state) {

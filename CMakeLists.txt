@@ -9,6 +9,7 @@ set(FPR_SOURCES
     "fpr_security.c"
     "fpr_security_handshake.c"
     "fpr.c"
+    "fpr_compat.c"
     "fpr_peers.c"
     "fpr_send.c"
     "fpr_diag.c"

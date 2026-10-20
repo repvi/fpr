@@ -36,27 +36,35 @@ typedef struct {
  * rejected and no lock is held. count_drops charges rejects to
  * stats.packets_dropped and counts size-valid packets in
  * stats.packets_received (extender accounting; other modes pass false). */
-bool _rx_begin(const fpr_rx_frame_t *frame, const uint8_t *data, int len,
+bool _rx_begin(fpr_node_t *net, const fpr_rx_frame_t *frame,
+               const uint8_t *data, int len,
                bool count_drops, fpr_rx_ctx_t *ctx);
 
 /** Client-mode receive handler: host discovery, handshake, data. */
-void _rx_client(const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_client(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /** Host-mode receive handler: connection requests, handshake, data. */
-void _rx_host(const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_host(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /** Extender-mode receive handler: route learning, forwarding, local delivery. */
-void _rx_extender(const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /* Cooperative task exit shared by the task bodies in fpr.c, fpr_client.c
  * and fpr_host.c — implemented in fpr.c next to _task_stop. */
-void _task_exit(TaskHandle_t *slot);
+void _task_exit(fpr_node_t *net, TaskHandle_t *slot);
 
-/** Client-mode reconnect/keepalive task body. */
-void _task_client_reconnect(void *arg);
+/* Cooperative-stop helper + the unified task entries — used by the
+ * node static-task API and the compat layer's dynamic tasks. */
+void _fpr_task_stop(fpr_node_t *net, TaskHandle_t *handle, volatile bool *stop_flag);
+void _fpr_loop_task_entry(void *arg);       /* arg = fpr_node_t* */
+void _fpr_reconnect_task_entry(void *arg);  /* arg = fpr_node_t* */
 
-/** Host-mode reconnect/keepalive task body. */
-void _task_host_reconnect(void *arg);
+/* Single-step bodies shared by the legacy tasks, the node tasks and
+ * fpr_node_poll() — each performs one iteration of the periodic work. */
+void _client_loop_step(fpr_node_t *net);
+void _host_loop_step(fpr_node_t *net);
+void _client_reconnect_step(fpr_node_t *net, uint32_t now_ms);
+void _host_reconnect_step(fpr_node_t *net, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

@@ -27,6 +27,7 @@
 #include "freertos/semphr.h"
 #include "esp_mac.h"
 #include "fpr/fpr_transport.h"
+#include "fpr/fpr_node.h"
 #include <string.h>
 
 #define FPR_CONNECT_NAME_SIZE 32
@@ -137,7 +138,10 @@ typedef struct {
 /* MTU check lives in fpr_transport_espnow.c (the only file that knows
  * the transport's max frame). */
 
-typedef struct {
+/* The node struct. `struct fpr_node` is the tag the public opaque
+ * fpr_node_t resolves to; fpr_network_t is kept as an alias so the
+ * compat global (fpr_net) and existing tests need no type churn. */
+typedef struct fpr_node {
     HashMap peers_map;
     /* Recursive mutex serializing peers_map and the peer stores it owns.
      * Recursive because RX-path callbacks (data_callback, request_cb)
@@ -195,10 +199,42 @@ typedef struct {
     /* Radio port — every esp_now/esp_wifi call goes through here
      * (fpr_transport_espnow by default; a fake under tests). */
     const fpr_transport_t *transport;
-    /* Mode protocol handler, installed by fpr_network_set_mode. */
-    void (*rx_handler)(const fpr_rx_frame_t *frame,
+    /* Mode protocol handler, installed by set_mode. The first arg is
+     * always this node — the transport passes it back through its
+     * ctx-less sink. */
+    void (*rx_handler)(struct fpr_node *self,
+                       const fpr_rx_frame_t *frame,
                        const uint8_t *data, int len);
+
+    /* Node-API callbacks (ctx-carrying). Checked first at each
+     * invocation site; the legacy ctx-less fields above remain the
+     * fallback so old callers behave identically. */
+    fpr_node_callbacks_t callbacks;
+
+    /* Periodic-work scheduling for fpr_node_poll(). The legacy tasks
+     * and the node tasks both run the same step bodies; these fields
+     * are the shared "armed/due" state (ms, caller-supplied epoch for
+     * poll; xTaskGetTickCount-based for tasks). */
+    bool loop_armed;
+    bool reconnect_armed;
+    uint32_t loop_next_due_ms;
+    uint32_t reconnect_next_due_ms;
+    uint32_t loop_duration_ms;         /* configured bound; 0 = forever */
+    uint32_t loop_deadline_ms;         /* anchored on first poll call */
+    uint32_t recon_keep_ms;            /* last keepalive (poll epoch) */
+
+    /* false only for the compat default node (fpr_net): its storage is
+     * static and its peers_lock is intentionally never deleted — ESP-
+     * NOW callback drain is not guaranteed by IDF, so a straggler may
+     * still take the lock after deinit. Heap nodes own their lock and
+     * free it on destroy (transport close() drains first). */
+    bool owns_storage;
 } fpr_network_t;
 
-
 extern fpr_network_t fpr_net;
+
+/* Init into caller-provided storage — shared by fpr_node_create()
+ * (heap node) and the compat layer (static fpr_net). */
+esp_err_t fpr_node_init_at(fpr_node_t *net, const char *name,
+                           const fpr_init_config_t *config);
+esp_err_t fpr_node_deinit(fpr_node_t *net);

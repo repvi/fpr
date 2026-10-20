@@ -238,7 +238,7 @@ cp main/main.cpp.backup main/main.cpp
 **No connection:**
 - Ensure both devices are powered and in range
 - Check WiFi is initialized properly
-- Verify `fpr_network_start()` is called on both
+- Verify `fpr_start()` is called on both
 - Check serial output for error messages
 
 **Messages not received:**

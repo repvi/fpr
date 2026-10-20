@@ -12,7 +12,7 @@
 #include "esp_check.h"
 
 static const char *TAG = "fpr_send";
-esp_err_t fpr_node_send_with_options(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options)
+esp_err_t fpr_send_opts(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, const fpr_send_options_t *options)
 {
     ESP_RETURN_ON_FALSE(data != NULL && size > 0, ESP_ERR_INVALID_ARG, TAG, "Invalid data or size");
     ESP_RETURN_ON_FALSE(options != NULL, ESP_ERR_INVALID_ARG, TAG, "Options cannot be NULL");
@@ -101,18 +101,18 @@ esp_err_t fpr_node_send_with_options(fpr_node_t *net, const uint8_t *peer_addres
     return last_result;
 }
 
-// Thin wrapper: fpr_node_send_with_options(net, ) fragments payloads larger than
+// Thin wrapper: fpr_send_opts(net, ) fragments payloads larger than
 // the per-packet protocol window automatically.
-static esp_err_t fpr_node_send_helper(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
+static esp_err_t _fpr_send_helper(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     fpr_send_options_t options = {
         .package_id = package_id,
         .max_hops = FPR_DEFAULT_MAX_HOPS
     };
-    return fpr_node_send_with_options(net, peer_address, data, size, &options);
+    return fpr_send_opts(net, peer_address, data, size, &options);
 }
 
-esp_err_t fpr_node_send(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_send(fpr_node_t *net, const uint8_t *peer_address, const void *data, int size, fpr_package_id_t package_id)
 {
     ESP_RETURN_ON_FALSE(peer_address != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer address is NULL");
 
@@ -137,13 +137,13 @@ esp_err_t fpr_node_send(fpr_node_t *net, const uint8_t *peer_address, const void
         _peers_unlock(net);
     }
 
-    return fpr_node_send_helper(net, peer_address, data, size, package_id);
+    return _fpr_send_helper(net, peer_address, data, size, package_id);
 }
 
-esp_err_t fpr_node_broadcast(fpr_node_t *net, const void *data, int size, fpr_package_id_t package_id)
+esp_err_t fpr_broadcast(fpr_node_t *net, const void *data, int size, fpr_package_id_t package_id)
 {
     uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    return fpr_node_send_helper(net, broadcast_mac, data, size, package_id);
+    return _fpr_send_helper(net, broadcast_mac, data, size, package_id);
 }
 
 // Create connection info with optional security keys
@@ -181,14 +181,14 @@ static fpr_connect_t make_fpr_info(fpr_node_t *net)
     return _make_fpr_info_with_keys(net, false, false, NULL, NULL);
 }
 
-esp_err_t fpr_node_send_device_info(fpr_node_t *net, const uint8_t *peer_address)
+esp_err_t fpr_send_device_info(fpr_node_t *net, const uint8_t *peer_address)
 {
     fpr_connect_t info = make_fpr_info(net);
-    return fpr_node_send(net, peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
+    return fpr_send(net, peer_address, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }
 
-esp_err_t fpr_node_broadcast_device_info(fpr_node_t *net)
+esp_err_t fpr_broadcast_device_info(fpr_node_t *net)
 {
     fpr_connect_t info = make_fpr_info(net);
-    return fpr_node_broadcast(net, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
+    return fpr_broadcast(net, (void *)&info, sizeof(info), FPR_PACKET_ID_CONTROL);
 }

@@ -30,7 +30,7 @@ void fpr_get_protocol_version_string(char *buf, size_t buf_size)
     }
 }
 
-void fpr_node_get_stats(fpr_node_t *net, fpr_network_stats_t *stats)
+void fpr_get_stats(fpr_node_t *net, fpr_stats_t *stats)
 {
     if (stats) {
         /* Counters are written under peers_lock by the rx/send paths —
@@ -47,7 +47,7 @@ void fpr_node_get_stats(fpr_node_t *net, fpr_network_stats_t *stats)
     }
 }
 
-void fpr_node_reset_stats(fpr_node_t *net)
+void fpr_reset_stats(fpr_node_t *net)
 {
     _peers_lock(net);
     memset(&net->stats, 0, sizeof(net->stats));
@@ -98,7 +98,7 @@ static void _route_stale_cb(void *key, void *value, void *user_data)
     }
 }
 
-size_t fpr_node_cleanup_stale_routes(fpr_node_t *net, uint32_t timeout_ms)
+size_t fpr_prune_routes(fpr_node_t *net, uint32_t timeout_ms)
 {
     route_cleanup_ctx_t ctx = {
         .net = net,
@@ -118,7 +118,7 @@ size_t fpr_node_cleanup_stale_routes(fpr_node_t *net, uint32_t timeout_ms)
     return ctx.removed_count;
 }
 
-void fpr_node_print_route_table(fpr_node_t *net)
+void fpr_print_routes(fpr_node_t *net)
 {
     _peers_lock(net);
     size_t peer_count = hashmap_size(&net->peers_map);
@@ -137,7 +137,7 @@ void fpr_node_print_route_table(fpr_node_t *net)
         return;
     }
 
-    size_t actual = fpr_node_list_peers(net, peers, peer_count);
+    size_t actual = fpr_list_peers(net, peers, peer_count);
     for (size_t i = 0; i < actual; i++) {
         const char *state_str = "UNKNOWN";
         switch (peers[i].state) {

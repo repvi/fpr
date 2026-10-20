@@ -63,7 +63,7 @@ typedef enum {
     FPR_STATE_STARTED,            // Started and running
     FPR_STATE_PAUSED,             // Paused (can be resumed)
     FPR_STATE_STOPPED             // Stopped (can be restarted)
-} fpr_network_state_t;
+} fpr_state_t;
 
 typedef int fpr_package_id_t;
 
@@ -103,8 +103,6 @@ typedef enum fpr_peer_state_t {
     FPR_PEER_STATE_REJECTED,        // Connection rejected
     FPR_PEER_STATE_BLOCKED          // Blocked from connecting
 } fpr_peer_state_t;
-
-typedef void(*fpr_data_receive_cb_t)(void *peer_addr, void *data, void *user_data);
 
 /**
  * @brief Callback for connection requests (host mode).
@@ -153,7 +151,7 @@ typedef struct {
     uint32_t send_failures;
     uint32_t replay_attacks_blocked;  // Packets dropped due to replay protection
     size_t peer_count;
-} fpr_network_stats_t;
+} fpr_stats_t;
 
 typedef struct {
     fpr_package_id_t package_id;
@@ -173,10 +171,10 @@ typedef struct {
 } fpr_client_config_t;
 
 /**
- * @brief Initialization configuration for FPR network.
- * 
- * Pass to fpr_network_init_ex() for advanced configuration.
- * Use fpr_network_init() for default configuration.
+ * @brief Radio/init configuration for a node.
+ *
+ * Pass as `fpr_node_config_t.init` to fpr_create(), or directly to
+ * fpr_init_at() for caller-provided storage.
  */
 typedef struct {
     uint8_t channel;            // WiFi channel (1-14, 0 = auto/current)

@@ -17,6 +17,7 @@
 
 #include "test_fpr_host.h"
 #include "fpr/fpr.h"
+#include "fpr/internal/private_defs.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -27,6 +28,23 @@
 #include "esp_mac.h"
 
 static const char *TAG = "FPR_HOST_TEST";
+
+/* The app owns its node — static storage via fpr_init_at(). */
+static fpr_node_t s_node;
+static const fpr_init_config_t FPR_INIT_CFG = FPR_INIT_CONFIG_DEFAULT();
+
+static StackType_t s_loop_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_loop_tcb;
+static const fpr_task_slot_t s_loop_slot = {
+    .stack = s_loop_stack, .stack_bytes = sizeof(s_loop_stack),
+    .tcb = &s_loop_tcb, .priority = 5, .core = 0,
+};
+static StackType_t s_recon_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_recon_tcb;
+static const fpr_task_slot_t s_recon_slot = {
+    .stack = s_recon_stack, .stack_bytes = sizeof(s_recon_stack),
+    .tcb = &s_recon_tcb, .priority = 5, .core = 0,
+};
 
 // Test configuration (set via fpr_host_test_start)
 static bool test_auto_mode = true;
@@ -57,7 +75,7 @@ static bool host_connection_request_cb(const uint8_t *peer_mac, const char *peer
     // Get RSSI from peer info if available
     fpr_peer_info_t info;
     int8_t rssi = 0;
-    if (fpr_get_peer_info((uint8_t*)peer_mac, &info) == ESP_OK) {
+    if (fpr_peer_info(&s_node, (uint8_t*)peer_mac, &info) == ESP_OK) {
         rssi = info.rssi;
     }
     
@@ -77,17 +95,17 @@ static bool host_connection_request_cb(const uint8_t *peer_mac, const char *peer
 /**
  * Application data callback
  */
-static void host_on_data_received(void *peer_addr, void *data, void *user_data)
+static void host_on_data_received(void *user, const uint8_t *peer_addr, void *data, size_t len)
 {
     messages_received++;
     
     uint8_t *src_mac = (uint8_t *)peer_addr;
-    int len = user_data ? *((int *)user_data) : 0;
+    (void)user;
     bytes_received += len;
     
     // Update last_seen timestamp by getting peer info (triggers internal update)
     fpr_peer_info_t peer_info;
-    if (fpr_get_peer_info(src_mac, &peer_info) == ESP_OK) {
+    if (fpr_peer_info(&s_node, src_mac, &peer_info) == ESP_OK) {
         ESP_LOGD(TAG, "[DATA] Peer %s last seen: %llu ms ago", peer_info.name, peer_info.last_seen_ms);
         
         // Check if this is the first message after reconnection (security state just established)
@@ -99,16 +117,16 @@ static void host_on_data_received(void *peer_addr, void *data, void *user_data)
     }
     
     ESP_LOGI(TAG, "[DATA] Message #%lu from " MACSTR " (size: %d bytes)",
-             messages_received, MAC2STR(src_mac), len);
+             messages_received, MAC2STR(src_mac), (int)len);
     
     // Print data as hex and ASCII
     uint8_t *bytes = (uint8_t *)data;
     printf("  HEX: ");
-    for (int i = 0; i < len; i++) {
+    for (int i = 0; i < (int)len; i++) {
         printf("%02X ", bytes[i]);
     }
     printf("\n  ASCII: ");
-    for (int i = 0; i < len; i++) {
+    for (int i = 0; i < (int)len; i++) {
         printf("%c", (bytes[i] >= 32 && bytes[i] < 127) ? bytes[i] : '.');
     }
     printf("\n");
@@ -116,7 +134,7 @@ static void host_on_data_received(void *peer_addr, void *data, void *user_data)
     if (test_echo_enabled) {
         // Echo back the data
         ESP_LOGI(TAG, "[ECHO] Sending data back to client...");
-        esp_err_t err = fpr_network_send_to_peer((uint8_t*)src_mac, data, len, 0);
+        esp_err_t err = fpr_send(&s_node, (uint8_t*)src_mac, data, len, 0);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "[ERROR] Failed to echo data: %s", esp_err_to_name(err));
         } else {
@@ -133,7 +151,7 @@ static void print_peer_list(void)
     fpr_peer_info_t peers[20];
     
     // Get all peers
-    size_t total = fpr_list_all_peers(peers, 20);
+    size_t total = fpr_list_peers(&s_node, peers, 20);
     ESP_LOGI(TAG, "=== All Peers (%zu) ===", total);
     for (size_t i = 0; i < total; i++) {
         ESP_LOGI(TAG, "  %zu. %s (" MACSTR ") - State: %d, RSSI: %d, Last seen: %llu ms ago",
@@ -168,8 +186,8 @@ static void stats_task(void *pvParameters)
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10000)); // Every 10 seconds
         
         // In AUTO mode, counters aren't updated by callback, so count from peer list
-        size_t current_connected = fpr_host_get_connected_count();
-        size_t total_peers = (size_t)fpr_network_get_peer_count();
+        size_t current_connected = fpr_host_peer_count(&s_node);
+        size_t total_peers = (size_t)fpr_peer_count(&s_node);
         
         // Update counters for auto mode (manual mode uses callback)
         if (test_auto_mode) {
@@ -188,8 +206,8 @@ static void stats_task(void *pvParameters)
         ESP_LOGI(TAG, "Bytes received: %lu", bytes_received);
         
         // Show network stats including queue-related metrics
-        fpr_network_stats_t net_stats;
-        fpr_get_network_stats(&net_stats);
+        fpr_stats_t net_stats;
+        fpr_get_stats(&s_node, &net_stats);
         ESP_LOGI(TAG, "Packets dropped (queue overflow/latest-only): %lu", (unsigned long)net_stats.packets_dropped);
         ESP_LOGI(TAG, "Replay attacks blocked: %lu", (unsigned long)net_stats.replay_attacks_blocked);
         ESP_LOGI(TAG, "================================");
@@ -206,7 +224,7 @@ static void host_loop_task(void *pvParameters)
     ESP_LOGI(TAG, "[LOOP] Starting host broadcast loop for 20 seconds...");
     
     // Start the host loop (20 seconds)
-    esp_err_t err = fpr_network_start_loop_task(pdMS_TO_TICKS(20000), false);
+    esp_err_t err = fpr_start_loop_task(&s_node, 20000, &s_loop_slot, false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "[LOOP] Failed to start loop task: %s", esp_err_to_name(err));
         vTaskDelete(NULL);
@@ -214,7 +232,7 @@ static void host_loop_task(void *pvParameters)
     }
     
     // Wait for loop to complete
-    while (fpr_network_is_loop_task_running()) {
+    while (fpr_loop_task_running(&s_node)) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     
@@ -222,7 +240,7 @@ static void host_loop_task(void *pvParameters)
     
     // Start persistent reconnect monitoring
     ESP_LOGI(TAG, "[RECONNECT] Starting persistent reconnect task...");
-    esp_err_t reconnect_err = fpr_network_start_reconnect_task();
+    esp_err_t reconnect_err = fpr_start_reconnect_task(&s_node, &s_recon_slot);
     if (reconnect_err == ESP_OK) {
         ESP_LOGI(TAG, "[RECONNECT] Reconnect task started - will monitor client connections indefinitely");
     } else {
@@ -230,7 +248,7 @@ static void host_loop_task(void *pvParameters)
     }
     
     // Check connected peers
-    size_t connected_count = fpr_host_get_connected_count();
+    size_t connected_count = fpr_host_peer_count(&s_node);
     ESP_LOGI(TAG, "[LOOP] Connected peers: %zu", connected_count);
     
     if (connected_count > 0) {
@@ -244,7 +262,7 @@ static void host_loop_task(void *pvParameters)
         while (1) {
             // Get all connected peers
             fpr_peer_info_t peers[10];
-            size_t count = fpr_list_all_peers(peers, 10);
+            size_t count = fpr_list_peers(&s_node, peers, 10);
             
             for (size_t i = 0; i < count; i++) {
                 if (peers[i].state == FPR_PEER_STATE_CONNECTED) {
@@ -252,7 +270,7 @@ static void host_loop_task(void *pvParameters)
                     char message[100];
                     snprintf(message, sizeof(message), "Host message #%lu to %s", ++msg_count, peers[i].name);
                     
-                    esp_err_t ret = fpr_network_send_to_peer(peers[i].mac, (uint8_t*)message, 
+                    esp_err_t ret = fpr_send(&s_node, peers[i].mac, (uint8_t*)message, 
                                                              strlen(message) + 1, 0);
                     if (ret == ESP_OK) {
                         ESP_LOGI(TAG, "[SEND] Sent to %s: %s", peers[i].name, message);
@@ -306,7 +324,7 @@ static esp_err_t wifi_init(void)
 static void host_queue_mode_stress_test_task(void *pvParameters)
 {
     // Wait for at least one client to connect
-    while (fpr_host_get_connected_count() == 0) {
+    while (fpr_host_peer_count(&s_node) == 0) {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
     
@@ -329,7 +347,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
     
     // Get connected peers
     fpr_peer_info_t peers[10];
-    size_t peer_count = fpr_list_all_peers(peers, 10);
+    size_t peer_count = fpr_list_peers(&s_node, peers, 10);
     
     int connected_count = 0;
     for (size_t i = 0; i < peer_count; i++) {
@@ -362,15 +380,15 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
         ESP_LOGI(TAG, "│ PHASE 1: NORMAL MODE                                       │");
         ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
         
-        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_NORMAL);
+        fpr_set_peer_queue_mode(&s_node, peer_mac, FPR_QUEUE_MODE_NORMAL);
         
         for (int s = 0; s < NUM_SIZES; s++) {
             total_tests++;
             int data_size = DATA_SIZES[s];
             ESP_LOGI(TAG, ">> %s in NORMAL mode", SIZE_NAMES[s]);
             
-            fpr_network_stats_t stats_before;
-            fpr_get_network_stats(&stats_before);
+            fpr_stats_t stats_before;
+            fpr_get_stats(&s_node, &stats_before);
             
             uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
             if (test_data) {
@@ -378,7 +396,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
                     memset(test_data, 'H' + i, data_size - 1);
                     test_data[0] = (uint8_t)i;
                     test_data[data_size - 1] = '\0';
-                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    fpr_send(&s_node, peer_mac, test_data, data_size, 0);
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
                 heap_caps_free(test_data);
@@ -386,8 +404,8 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
             
             vTaskDelay(pdMS_TO_TICKS(200));
             
-            fpr_network_stats_t stats_after;
-            fpr_get_network_stats(&stats_after);
+            fpr_stats_t stats_after;
+            fpr_get_stats(&s_node, &stats_after);
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
             
             if (dropped == 0) {
@@ -406,15 +424,15 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
         ESP_LOGI(TAG, "│ PHASE 2: LATEST_ONLY MODE                                  │");
         ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
         
-        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_LATEST_ONLY);
+        fpr_set_peer_queue_mode(&s_node, peer_mac, FPR_QUEUE_MODE_LATEST_ONLY);
         
         for (int s = 0; s < NUM_SIZES; s++) {
             total_tests++;
             int data_size = DATA_SIZES[s];
             ESP_LOGI(TAG, ">> %s in LATEST_ONLY mode", SIZE_NAMES[s]);
             
-            fpr_network_stats_t stats_before;
-            fpr_get_network_stats(&stats_before);
+            fpr_stats_t stats_before;
+            fpr_get_stats(&s_node, &stats_before);
             
             uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
             if (test_data) {
@@ -422,7 +440,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
                     memset(test_data, 'L' + i, data_size - 1);
                     test_data[0] = (uint8_t)i;
                     test_data[data_size - 1] = '\0';
-                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    fpr_send(&s_node, peer_mac, test_data, data_size, 0);
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
                 heap_caps_free(test_data);
@@ -430,10 +448,10 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
             
             vTaskDelay(pdMS_TO_TICKS(200));
             
-            fpr_network_stats_t stats_after;
-            fpr_get_network_stats(&stats_after);
+            fpr_stats_t stats_after;
+            fpr_get_stats(&s_node, &stats_after);
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
-            uint32_t queued = fpr_network_get_peer_queued_packets(peer_mac);
+            uint32_t queued = fpr_peer_queued_packets(&s_node, peer_mac);
             
             if (dropped > 0 || queued <= 1) {
                 ESP_LOGI(TAG, "   ✓ PASS: LATEST_ONLY working (dropped=%lu, queued=%lu)", 
@@ -452,15 +470,15 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
         ESP_LOGI(TAG, "│ PHASE 3: BACK TO NORMAL MODE                               │");
         ESP_LOGI(TAG, "└─────────────────────────────────────────────────────────────┘");
         
-        fpr_network_set_peer_queue_mode(peer_mac, FPR_QUEUE_MODE_NORMAL);
+        fpr_set_peer_queue_mode(&s_node, peer_mac, FPR_QUEUE_MODE_NORMAL);
         
         for (int s = 0; s < NUM_SIZES; s++) {
             total_tests++;
             int data_size = DATA_SIZES[s];
             ESP_LOGI(TAG, ">> %s after switching back to NORMAL", SIZE_NAMES[s]);
             
-            fpr_network_stats_t stats_before;
-            fpr_get_network_stats(&stats_before);
+            fpr_stats_t stats_before;
+            fpr_get_stats(&s_node, &stats_before);
             
             uint8_t *test_data = heap_caps_malloc(data_size, MALLOC_CAP_DEFAULT);
             if (test_data) {
@@ -468,7 +486,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
                     memset(test_data, 'N' + i, data_size - 1);
                     test_data[0] = (uint8_t)i;
                     test_data[data_size - 1] = '\0';
-                    fpr_network_send_to_peer(peer_mac, test_data, data_size, 0);
+                    fpr_send(&s_node, peer_mac, test_data, data_size, 0);
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
                 heap_caps_free(test_data);
@@ -476,8 +494,8 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
             
             vTaskDelay(pdMS_TO_TICKS(200));
             
-            fpr_network_stats_t stats_after;
-            fpr_get_network_stats(&stats_after);
+            fpr_stats_t stats_after;
+            fpr_get_stats(&s_node, &stats_after);
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
             
             if (dropped == 0) {
@@ -551,7 +569,7 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
     
     // Initialize FPR
     ESP_LOGI(TAG, "Initializing FPR network...");
-    ret = fpr_network_init("FPR-Host-Test");
+    ret = fpr_init_at(&s_node, "FPR-Host-Test", &FPR_INIT_CFG);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "FPR init failed: %s", esp_err_to_name(ret));
         return ret;
@@ -560,10 +578,10 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
     
     // Set queue mode if latest-only is requested
     if (test_use_latest_only_mode) {
-        fpr_network_set_queue_mode(FPR_QUEUE_MODE_LATEST_ONLY);
+        fpr_set_queue_mode(&s_node, FPR_QUEUE_MODE_LATEST_ONLY);
         ESP_LOGI(TAG, "Queue mode set to LATEST_ONLY - only newest data will be kept");
     } else {
-        fpr_network_set_queue_mode(FPR_QUEUE_MODE_NORMAL);
+        fpr_set_queue_mode(&s_node, FPR_QUEUE_MODE_NORMAL);
     }
     
     // Configure as host
@@ -573,7 +591,7 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
         .request_cb = test_auto_mode ? NULL : host_connection_request_cb  // Only used in manual mode
     };
     
-    ret = fpr_host_set_config(&host_config);
+    ret = fpr_host_set_config(&s_node, &host_config);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to set host config: %s", esp_err_to_name(ret));
         return ret;
@@ -581,17 +599,17 @@ esp_err_t fpr_host_test_start(const fpr_host_test_config_t *config)
     ESP_LOGI(TAG, "Host configuration set");
     
     // Register data receive callback
-    fpr_register_receive_callback(host_on_data_received);
+    fpr_set_callbacks(&s_node, &(fpr_node_callbacks_t){.on_data = host_on_data_received});
     
     // Start the network
     ESP_LOGI(TAG, "Starting FPR network...");
-    ret = fpr_network_start();
+    ret = fpr_start(&s_node);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start network: %s", esp_err_to_name(ret));
         return ret;
     }
     // Set mode to host (after ESP-NOW is initialized)
-    fpr_network_set_mode(FPR_MODE_HOST);
+    fpr_set_mode(&s_node, FPR_MODE_HOST);
     ESP_LOGI(TAG, "Mode set to HOST");
     
     ESP_LOGI(TAG, "========================================");
@@ -624,7 +642,7 @@ void fpr_host_test_stop(void)
     }
     
     // Properly deinitialize FPR network to clean up all state
-    fpr_network_deinit();
+    fpr_deinit(&s_node);
     
     // Reset all static variables for clean reinitialization
     peers_discovered = 0;

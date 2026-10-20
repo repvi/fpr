@@ -8,6 +8,7 @@
 
 #include "test_fpr_data_sizes.h"
 #include "fpr/fpr.h"
+#include "fpr/internal/private_defs.h"
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -19,6 +20,23 @@
 #include "esp_random.h"
 
 static const char *TAG = "FPR_DATA_SIZE_TEST";
+
+/* The app owns its node — static storage via fpr_init_at(). */
+static fpr_node_t s_node;
+static const fpr_init_config_t FPR_INIT_CFG = FPR_INIT_CONFIG_DEFAULT();
+
+static StackType_t s_loop_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_loop_tcb;
+static const fpr_task_slot_t s_loop_slot = {
+    .stack = s_loop_stack, .stack_bytes = sizeof(s_loop_stack),
+    .tcb = &s_loop_tcb, .priority = 5, .core = 0,
+};
+static StackType_t s_recon_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_recon_tcb;
+static const fpr_task_slot_t s_recon_slot = {
+    .stack = s_recon_stack, .stack_bytes = sizeof(s_recon_stack),
+    .tcb = &s_recon_tcb, .priority = 5, .core = 0,
+};
 
 // Test payload sizes (in bytes)
 static const uint16_t TEST_SIZES[] = {
@@ -53,7 +71,7 @@ static void generate_test_payload(uint8_t *buffer, uint16_t size, uint16_t test_
 
 /**
  * Wait for complete data reception with timeout
- * Polls fpr_network_get_data_from_peer until data is available or timeout
+ * Polls fpr_recv_from until data is available or timeout
  * NOTE: poll_interval_ms should be long enough to receive all fragments of a multi-packet transfer
  */
 static bool wait_for_data(uint8_t *peer_mac, void *buffer, int size, TickType_t total_timeout_ms, TickType_t poll_interval_ms)
@@ -61,11 +79,11 @@ static bool wait_for_data(uint8_t *peer_mac, void *buffer, int size, TickType_t 
     TickType_t start = xTaskGetTickCount();
     TickType_t timeout_ticks = pdMS_TO_TICKS(total_timeout_ms);
     // Use at least 500ms per poll to allow multi-packet reception
-    TickType_t poll_ticks = pdMS_TO_TICKS(poll_interval_ms < 500 ? 500 : poll_interval_ms);
+    TickType_t poll_ms = pdMS_TO_TICKS(poll_interval_ms < 500 ? 500 : poll_interval_ms);
     
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
         // Try to get data with sufficient timeout per attempt for fragmented packets
-        bool got_data = fpr_network_get_data_from_peer(peer_mac, buffer, size, poll_ticks);
+        bool got_data = fpr_recv_from(&s_node, peer_mac, buffer, size, poll_ms);
         if (got_data) {
             return true;
         }
@@ -161,14 +179,14 @@ static bool verify_test_payload(const uint8_t *buffer, uint16_t expected_size, u
 
 /**
  * Data receive callback - NOT USED
- * Using direct polling with fpr_network_get_data_from_peer instead
+ * Using direct polling with fpr_recv_from instead
  */
-static void on_data_received(void *peer_addr, void *data, void *user_data)
+static void on_data_received(void *user, const uint8_t *peer_addr, void *data, size_t len)
 {
     (void)peer_addr;
     (void)data;
-    (void)user_data;
-    // Callback not used - we poll directly with fpr_network_get_data_from_peer
+    
+    // Callback not used - we poll directly with fpr_recv_from
 }
 
 /**
@@ -182,9 +200,9 @@ static void client_test_task(void *pvParameters)
     
     // Wait for connection
     while (!is_connected) {
-        if (fpr_client_is_connected()) {
+        if (fpr_client_connected(&s_node)) {
             is_connected = true;
-            esp_err_t err = fpr_client_get_host_info(peer_mac, NULL, 0);
+            esp_err_t err = fpr_client_host_info(&s_node, peer_mac, NULL, 0);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "[CLIENT] Failed to get host info: %s", esp_err_to_name(err));
                 vTaskDelete(NULL);
@@ -212,7 +230,7 @@ static void client_test_task(void *pvParameters)
         generate_test_payload(buffer, size, test_id);
         
         ESP_LOGI(TAG, "[CLIENT] Sending test #%u: %u bytes...", test_id, size);
-        esp_err_t err = fpr_network_send_to_peer(peer_mac, buffer, size, test_id);
+        esp_err_t err = fpr_send(&s_node, peer_mac, buffer, size, test_id);
         
         if (err == ESP_OK) {
             bytes_sent += size;
@@ -292,7 +310,7 @@ static void host_test_task(void *pvParameters)
     // Continuously poll for incoming data from any connected client
     while (1) {
         // Wait a bit for connection
-        size_t connected = fpr_host_get_connected_count();
+        size_t connected = fpr_host_peer_count(&s_node);
         if (connected == 0) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -300,7 +318,7 @@ static void host_test_task(void *pvParameters)
         
         // Get list of connected clients
         fpr_peer_info_t peers[5];
-        size_t peer_count = fpr_list_all_peers(peers, 5);
+        size_t peer_count = fpr_list_peers(&s_node, peers, 5);
         
         for (size_t i = 0; i < peer_count; i++) {
             if (peers[i].state != FPR_PEER_STATE_CONNECTED) {
@@ -316,7 +334,7 @@ static void host_test_task(void *pvParameters)
             }
             
             // Poll with configurable timeout to allow fragmented packets to complete
-            bool got_data = fpr_network_get_data_from_peer(peers[i].mac, rx_buffer, 1000, pdMS_TO_TICKS(test_rx_timeout_ms));
+            bool got_data = fpr_recv_from(&s_node, peers[i].mac, rx_buffer, 1000, test_rx_timeout_ms);
             
             if (got_data) {
                 // Extract header
@@ -365,7 +383,7 @@ static void host_test_task(void *pvParameters)
                 // Echo back if echo mode enabled
                 if (test_echo_mode) {
                     ESP_LOGI(TAG, "[HOST] Sending %u bytes back to client...", size);
-                    esp_err_t err = fpr_network_send_to_peer(peers[i].mac, rx_buffer, size, test_id);
+                    esp_err_t err = fpr_send(&s_node, peers[i].mac, rx_buffer, size, test_id);
                     if (err == ESP_OK) {
                         bytes_sent += size;
                         ESP_LOGI(TAG, "[HOST] Echo sent successfully");
@@ -379,7 +397,7 @@ static void host_test_task(void *pvParameters)
         }
         
         // Small delay between polling cycles
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(50);
         
         // Periodic status update
         static TickType_t last_status = 0;
@@ -408,8 +426,8 @@ static void stats_task(void *pvParameters)
         ESP_LOGI(TAG, "  Bytes Received:  %lu", bytes_received);
         ESP_LOGI(TAG, "===========================");
         
-        fpr_network_stats_t net_stats;
-        fpr_get_network_stats(&net_stats);
+        fpr_stats_t net_stats;
+        fpr_get_stats(&s_node, &net_stats);
         ESP_LOGI(TAG, "  FPR Stats:");
         ESP_LOGI(TAG, "    Packets Sent:      %lu", net_stats.packets_sent);
         ESP_LOGI(TAG, "    Packets Received:  %lu", net_stats.packets_received);
@@ -491,7 +509,7 @@ esp_err_t fpr_data_size_test_host_start(const fpr_data_size_test_config_t *confi
     char name[32];
     snprintf(name, sizeof(name), "fpr-host-%02X%02X", mac[4], mac[5]);
     
-    ESP_ERROR_CHECK(fpr_network_init(name));
+    ESP_ERROR_CHECK(fpr_init_at(&s_node, name, &FPR_INIT_CFG));
     
     // Configure host
     fpr_host_config_t host_cfg = {
@@ -499,17 +517,17 @@ esp_err_t fpr_data_size_test_host_start(const fpr_data_size_test_config_t *confi
         .connection_mode = test_auto_mode ? FPR_CONNECTION_AUTO : FPR_CONNECTION_MANUAL,
         .request_cb = NULL
     };
-    ESP_ERROR_CHECK(fpr_host_set_config(&host_cfg));
+    ESP_ERROR_CHECK(fpr_host_set_config(&s_node, &host_cfg));
     
     // Note: NOT registering receive callback - using direct polling instead
-    // fpr_register_receive_callback(on_data_received);
+    // fpr_set_callbacks(&s_node, &(fpr_node_callbacks_t){.on_data = on_data_received});
     
     // Start FPR
-    ESP_ERROR_CHECK(fpr_network_start());
-    fpr_network_set_mode(FPR_MODE_HOST);
+    ESP_ERROR_CHECK(fpr_start(&s_node));
+    fpr_set_mode(&s_node, FPR_MODE_HOST);
     
     // Start host loop
-    ESP_ERROR_CHECK(fpr_network_start_loop_task(pdMS_TO_TICKS(60000), false));
+    ESP_ERROR_CHECK(fpr_start_loop_task(&s_node, 60000, &s_loop_slot, false));
     
     // Start test task
     xTaskCreate(host_test_task, "host_test", 4096, NULL, 5, &test_task_handle);
@@ -566,7 +584,7 @@ esp_err_t fpr_data_size_test_client_start(const fpr_data_size_test_config_t *con
     char name[32];
     snprintf(name, sizeof(name), "fpr-client-%02X%02X", mac[4], mac[5]);
     
-    ESP_ERROR_CHECK(fpr_network_init(name));
+    ESP_ERROR_CHECK(fpr_init_at(&s_node, name, &FPR_INIT_CFG));
     
     // Configure client
     fpr_client_config_t client_cfg = {
@@ -574,17 +592,17 @@ esp_err_t fpr_data_size_test_client_start(const fpr_data_size_test_config_t *con
         .discovery_cb = NULL,
         .selection_cb = NULL
     };
-    ESP_ERROR_CHECK(fpr_client_set_config(&client_cfg));
+    ESP_ERROR_CHECK(fpr_client_set_config(&s_node, &client_cfg));
     
     // Note: NOT registering receive callback - using direct polling instead
-    // fpr_register_receive_callback(on_data_received);
+    // fpr_set_callbacks(&s_node, &(fpr_node_callbacks_t){.on_data = on_data_received});
     
     // Start FPR
-    ESP_ERROR_CHECK(fpr_network_start());
-    fpr_network_set_mode(FPR_MODE_CLIENT);
+    ESP_ERROR_CHECK(fpr_start(&s_node));
+    fpr_set_mode(&s_node, FPR_MODE_CLIENT);
     
     // Start client loop
-    ESP_ERROR_CHECK(fpr_network_start_loop_task(pdMS_TO_TICKS(30000), false));
+    ESP_ERROR_CHECK(fpr_start_loop_task(&s_node, 30000, &s_loop_slot, false));
     
     // Start test task
     xTaskCreate(client_test_task, "client_test", 8192, NULL, 5, &test_task_handle);
@@ -605,7 +623,7 @@ void fpr_data_size_test_stop(void)
         stats_task_handle = NULL;
     }
     
-    fpr_network_stop();
+    fpr_stop(&s_node);
     ESP_LOGI(TAG, "Test stopped");
 }
 

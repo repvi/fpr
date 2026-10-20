@@ -26,17 +26,17 @@ static void _peer_dec_queued(fpr_node_t *net, FPR_STORE_HASH_TYPE *peer)
     _peers_unlock(net);
 }
 
-esp_err_t fpr_node_add_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_add_peer(fpr_node_t *net, const uint8_t *peer_mac)
 {
     return _peer_add(net, peer_mac, NULL, false);
 }
 
-esp_err_t fpr_node_remove_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_remove_peer(fpr_node_t *net, const uint8_t *peer_mac)
 {
     return _peer_remove(net, peer_mac);
 }
 
-int fpr_node_peer_count(fpr_node_t *net)
+int fpr_peer_count(fpr_node_t *net)
 {
     _peers_lock(net);
     int count = hashmap_size(&net->peers_map);
@@ -65,7 +65,7 @@ static void _peer_snapshot_cb(void *key, void *value, void *user_data)
     }
 }
 
-size_t fpr_node_get_peers(fpr_node_t *net, fpr_data_receive_cb_t callback, void *user_data)
+size_t fpr_foreach_peer(fpr_node_t *net, fpr_peer_cb_t callback, void *user)
 {
     if (callback == NULL) {
         return 0;
@@ -91,14 +91,14 @@ size_t fpr_node_get_peers(fpr_node_t *net, fpr_data_receive_cb_t callback, void 
      * valid even if the callback removes the peer mid-iteration (the
      * store is just marked dead, freed at release). */
     for (size_t i = 0; i < n; i++) {
-        callback(stores[i]->mac, stores[i], user_data);
+        callback(user, stores[i]->mac, stores[i]);
         _peer_store_release(net, stores[i]);
     }
     heap_caps_free(stores);
     return n;
 }
 
-esp_err_t fpr_node_get_peer_info(fpr_node_t *net, const uint8_t *peer_mac, fpr_peer_info_t *info)
+esp_err_t fpr_peer_info(fpr_node_t *net, const uint8_t *peer_mac, fpr_peer_info_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
@@ -113,7 +113,7 @@ esp_err_t fpr_node_get_peer_info(fpr_node_t *net, const uint8_t *peer_mac, fpr_p
     return ESP_OK;
 }
 
-size_t fpr_node_list_peers(fpr_node_t *net, fpr_peer_info_t *peer_array, size_t max_peers)
+size_t fpr_list_peers(fpr_node_t *net, fpr_peer_info_t *peer_array, size_t max_peers)
 {
     if (!peer_array || max_peers == 0) {
         return 0;
@@ -132,7 +132,7 @@ size_t fpr_node_list_peers(fpr_node_t *net, fpr_peer_info_t *peer_array, size_t 
     return ctx.count;
 }
 
-bool fpr_node_get_data_from_peer(fpr_node_t *net, const uint8_t *peer_mac, void *data, int data_size, uint32_t timeout_ms)
+bool fpr_recv_from(fpr_node_t *net, const uint8_t *peer_mac, void *data, int data_size, uint32_t timeout_ms)
 {
     const TickType_t timeout = (timeout_ms == UINT32_MAX)
                                    ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
@@ -241,7 +241,7 @@ out:
     return result;
 }
 
-esp_err_t fpr_node_set_peer_queue_mode(fpr_node_t *net, const uint8_t *peer_mac, fpr_queue_mode_t mode)
+esp_err_t fpr_set_peer_queue_mode(fpr_node_t *net, const uint8_t *peer_mac, fpr_queue_mode_t mode)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -257,7 +257,7 @@ esp_err_t fpr_node_set_peer_queue_mode(fpr_node_t *net, const uint8_t *peer_mac,
     return ESP_ERR_NOT_FOUND;
 }
 
-uint32_t fpr_node_get_peer_queued_packets(fpr_node_t *net, const uint8_t *peer_mac)
+uint32_t fpr_peer_queued_packets(fpr_node_t *net, const uint8_t *peer_mac)
 {
     if (peer_mac == NULL) {
         return 0;
@@ -289,7 +289,7 @@ static void _peer_by_name_cb(void *key, void *value, void *user_data)
     }
 }
 
-esp_err_t fpr_node_get_peer_by_name(fpr_node_t *net, const char *peer_name, uint8_t *mac_out)
+esp_err_t fpr_peer_by_name(fpr_node_t *net, const char *peer_name, uint8_t *mac_out)
 {
     ESP_RETURN_ON_FALSE(peer_name != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer name is NULL");
     ESP_RETURN_ON_FALSE(mac_out != NULL, ESP_ERR_INVALID_ARG, TAG, "MAC output buffer is NULL");
@@ -327,7 +327,7 @@ static void _peer_clear_cb(void *key, void *value, void *user_data)
     }
 }
 
-esp_err_t fpr_node_clear_peers(fpr_node_t *net)
+esp_err_t fpr_clear_peers(fpr_node_t *net)
 {
     _peers_lock(net);
     size_t peer_count = hashmap_size(&net->peers_map);
@@ -353,7 +353,7 @@ esp_err_t fpr_node_clear_peers(fpr_node_t *net)
     return ESP_OK;
 }
 
-bool fpr_node_is_peer_reachable(fpr_node_t *net, const uint8_t *peer_mac, uint32_t timeout_ms)
+bool fpr_peer_reachable(fpr_node_t *net, const uint8_t *peer_mac, uint32_t timeout_ms)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, false, TAG, "Peer MAC is NULL");
 
@@ -376,7 +376,7 @@ bool fpr_node_is_peer_reachable(fpr_node_t *net, const uint8_t *peer_mac, uint32
     }
 
     // Send a ping (device info) and check response
-    esp_err_t err = fpr_node_send_device_info(net, peer_mac);
+    esp_err_t err = fpr_send_device_info(net, peer_mac);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to send ping to peer: %s", esp_err_to_name(err));
         return false;

@@ -138,13 +138,13 @@ typedef struct {
 /* MTU check lives in fpr_transport_espnow.c (the only file that knows
  * the transport's max frame). */
 
-/* The node struct. `struct fpr_node` is the tag the public opaque
- * fpr_node_t resolves to; fpr_network_t is kept as an alias so the
- * compat global (fpr_net) and existing tests need no type churn. */
+/* The node struct — `struct fpr_node` is the tag the public opaque
+ * fpr_node_t resolves to. Re-typedef'd here (same type, legal in C11)
+ * so callers with the full definition can declare their own storage. */
 typedef struct fpr_node {
     HashMap peers_map;
     /* Recursive mutex serializing peers_map and the peer stores it owns.
-     * Recursive because RX-path callbacks (data_callback, request_cb)
+     * Recursive because RX-path callbacks (on_data, request_cb)
      * legitimately re-enter peer APIs (remove/approve) on the same task
      * while the map lock is held. */
     SemaphoreHandle_t peers_lock;
@@ -154,9 +154,6 @@ typedef struct fpr_node {
     fpr_visibility_t access_state;
     fpr_mode_type_t current_mode;
     bool routing_enabled;       // Enable mesh routing/forwarding
-    
-    // Application data callback
-    fpr_data_receive_cb_t data_callback;
     
     // Connection control (host mode)
     fpr_host_config_t host_config;
@@ -185,7 +182,7 @@ typedef struct fpr_node {
      * the recursive mutex for every later caller. */
     volatile bool loop_stop_requested;
     volatile bool reconnect_stop_requested;
-    fpr_network_state_t state;        // Current network state
+    fpr_state_t state;                // Current network state
     bool paused;                      // Paused flag
     
     // Channel and power management
@@ -206,15 +203,16 @@ typedef struct fpr_node {
                        const fpr_rx_frame_t *frame,
                        const uint8_t *data, int len);
 
-    /* Node-API callbacks (ctx-carrying). Checked first at each
-     * invocation site; the legacy ctx-less fields above remain the
-     * fallback so old callers behave identically. */
+    /* Application callbacks (ctx-carrying). Checked first at each
+     * invocation site; the ctx-less config fields (request_cb,
+     * discovery_cb, selection_cb in host_config/client_config) remain
+     * the fallback so config-based callers behave identically. */
     fpr_node_callbacks_t callbacks;
 
-    /* Periodic-work scheduling for fpr_node_poll(). The legacy tasks
-     * and the node tasks both run the same step bodies; these fields
-     * are the shared "armed/due" state (ms, caller-supplied epoch for
-     * poll; xTaskGetTickCount-based for tasks). */
+    /* Periodic-work scheduling for fpr_poll(). The node tasks run the
+     * same step bodies; these fields are the shared "armed/due" state
+     * (ms, caller-supplied epoch for poll; xTaskGetTickCount-based for
+     * tasks). */
     bool loop_armed;
     bool reconnect_armed;
     uint32_t loop_next_due_ms;
@@ -223,18 +221,11 @@ typedef struct fpr_node {
     uint32_t loop_deadline_ms;         /* anchored on first poll call */
     uint32_t recon_keep_ms;            /* last keepalive (poll epoch) */
 
-    /* false only for the compat default node (fpr_net): its storage is
-     * static and its peers_lock is intentionally never deleted — ESP-
-     * NOW callback drain is not guaranteed by IDF, so a straggler may
-     * still take the lock after deinit. Heap nodes own their lock and
-     * free it on destroy (transport close() drains first). */
+    /* false for caller-provided storage (fpr_init_at): static nodes
+     * keep peers_lock process-lifetime — ESP-NOW callback drain is not
+     * guaranteed by IDF, so a straggler may still take the lock after
+     * deinit. Heap nodes own their lock and free it on destroy
+     * (transport close() drains first). */
     bool owns_storage;
-} fpr_network_t;
+} fpr_node_t;
 
-extern fpr_network_t fpr_net;
-
-/* Init into caller-provided storage — shared by fpr_node_create()
- * (heap node) and the compat layer (static fpr_net). */
-esp_err_t fpr_node_init_at(fpr_node_t *net, const char *name,
-                           const fpr_init_config_t *config);
-esp_err_t fpr_node_deinit(fpr_node_t *net);

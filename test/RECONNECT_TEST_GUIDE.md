@@ -21,13 +21,13 @@ The FPR library now includes **persistent reconnect/keepalive monitoring** that 
 ### New API Functions
 ```c
 // Start persistent reconnect monitoring (call after discovery loop)
-esp_err_t fpr_network_start_reconnect_task(void);
+esp_err_t fpr_start_reconnect_task(void);
 
 // Stop reconnect monitoring
-esp_err_t fpr_network_stop_reconnect_task(void);
+esp_err_t fpr_stop_reconnect_task(void);
 
 // Check if reconnect task is running
-bool fpr_network_is_reconnect_task_running(void);
+bool fpr_reconnect_task_running(void);
 ```
 
 ## Test Files Updated
@@ -145,7 +145,7 @@ Messages received: 120
    ```
    [fpr] Reconnect task started for client mode
    ```
-   If not present, ensure `fpr_network_start_reconnect_task()` is called after loop.
+   If not present, ensure `fpr_start_reconnect_task()` is called after loop.
 
 2. **Check keepalive interval**:
    - Should see periodic sends (not logged by default for keepalives)

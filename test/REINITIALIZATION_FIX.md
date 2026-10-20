@@ -4,9 +4,9 @@
 
 When calling `fpr_host_test_stop()` or `fpr_client_test_stop()` followed by `fpr_host_test_start()` or `fpr_client_test_start()`, devices would fail to reconnect to each other. This was caused by:
 
-1. **Incomplete cleanup**: The test stop functions only deleted test tasks but didn't call `fpr_network_deinit()`
+1. **Incomplete cleanup**: The test stop functions only deleted test tasks but didn't call `fpr_deinit()`
 2. **Stale peer data**: Old peer entries remained in the hashmap from the previous initialization
-3. **No init state check**: `fpr_network_init()` didn't check if already initialized, allowing double-initialization
+3. **No init state check**: `fpr_init_at()` didn't check if already initialized, allowing double-initialization
 
 ## Root Cause
 
@@ -19,7 +19,7 @@ When you reinitialize without proper cleanup:
 
 ## Fixes Applied
 
-### 1. Added `fpr_network_deinit()` to test stop functions
+### 1. Added `fpr_deinit()` to test stop functions
 
 **File: `test_fpr_client.c`**
 ```c
@@ -28,7 +28,7 @@ void fpr_client_test_stop(void)
     // ... delete test tasks ...
     
     // Properly deinitialize FPR network to clean up all state
-    fpr_network_deinit();
+    fpr_deinit();
     
     ESP_LOGI(TAG, "FPR Client Test stopped");
 }
@@ -41,7 +41,7 @@ void fpr_host_test_stop(void)
     // ... delete test tasks ...
     
     // Properly deinitialize FPR network to clean up all state
-    fpr_network_deinit();
+    fpr_deinit();
     
     ESP_LOGI(TAG, "FPR Host Test stopped");
 }
@@ -51,13 +51,13 @@ void fpr_host_test_stop(void)
 
 **File: `fpr.c`**
 ```c
-esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
+esp_err_t fpr_init_at(const char *name, const fpr_init_config_t *config)
 {
     // ... parameter checks ...
     
     // Check if already initialized
-    if (fpr_net.state != FPR_STATE_UNINITIALIZED) {
-        ESP_LOGE(TAG, "FPR network already initialized. Call fpr_network_deinit() first.");
+    if (s_node.state != FPR_STATE_UNINITIALIZED) {
+        ESP_LOGE(TAG, "FPR network already initialized. Call fpr_deinit() first.");
         return ESP_ERR_INVALID_STATE;
     }
     
@@ -65,14 +65,14 @@ esp_err_t fpr_network_init_ex(const char *name, const fpr_init_config_t *config)
 }
 ```
 
-## What `fpr_network_deinit()` Does
+## What `fpr_deinit()` Does
 
 The deinit function performs complete cleanup:
 1. Deletes reconnect task if running
 2. Calls `_reset_all_peers()` - removes all peer entries and ESP-NOW peers
 3. Frees the hashmap structure
 4. Sets state to `FPR_STATE_UNINITIALIZED`
-5. Zeros out entire `fpr_net` structure with `memset()`
+5. Zeros out entire `s_node` structure with `memset()`
 6. Calls `esp_now_deinit()` to clean up ESP-NOW layer
 
 ## How to Test Reinitialization
@@ -104,7 +104,7 @@ fpr_host_test_start(NULL);   // Reinitialize host
 
 **Client logs after restart:**
 ```
-[fpr] FPR network already initialized. Call fpr_network_deinit() first.  // If you forget to call stop
+[fpr] FPR network already initialized. Call fpr_deinit() first.  // If you forget to call stop
 [FPR_CLIENT_TEST] FPR Client Test stopped
 [fpr] FPR Network initialized: FPR-Client-Test (...)
 [FPR_CLIENT_TEST] FPR Client is now RUNNING
@@ -135,31 +135,31 @@ When using FPR in your application:
 
 ### ✅ CORRECT - Stop before reinitializing
 ```c
-fpr_network_deinit();           // Clean up everything
-fpr_network_init("MyDevice");   // Reinitialize
-fpr_network_start();            // Start fresh
+fpr_deinit();           // Clean up everything
+fpr_init_at("MyDevice");   // Reinitialize
+fpr_start();            // Start fresh
 ```
 
 ### ❌ WRONG - Don't double-initialize
 ```c
-fpr_network_init("MyDevice");
+fpr_init_at("MyDevice");
 // ... use network ...
-fpr_network_init("MyDevice");   // ERROR: Already initialized!
+fpr_init_at("MyDevice");   // ERROR: Already initialized!
 ```
 
 ### ✅ CORRECT - Use test stop functions
 ```c
 fpr_client_test_start(NULL);
 // ... test runs ...
-fpr_client_test_stop();         // Now calls fpr_network_deinit() internally
+fpr_client_test_stop();         // Now calls fpr_deinit() internally
 fpr_client_test_start(NULL);    // Safe to restart
 ```
 
 ## Testing Checklist
 
-- [x] `fpr_network_deinit()` added to `fpr_client_test_stop()`
-- [x] `fpr_network_deinit()` added to `fpr_host_test_stop()`
-- [x] State check added to `fpr_network_init_ex()`
+- [x] `fpr_deinit()` added to `fpr_client_test_stop()`
+- [x] `fpr_deinit()` added to `fpr_host_test_stop()`
+- [x] State check added to `fpr_init_at()`
 - [ ] Test client stop → restart → reconnect
 - [ ] Test host stop → restart → reconnect
 - [ ] Test both stop → restart → reconnect

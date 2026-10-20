@@ -88,8 +88,8 @@ static inline void fpr_set_peer_info(fpr_wire_peer_info_t *gen_info)
  * ESP-NOW RX callbacks (WiFi task), the loop/reconnect tasks and
  * application calls all reach the map; without this a concurrent remove
  * can free a store another context is using. The lock is recursive so
- * callbacks invoked while a caller holds it (data_callback calling
- * fpr_network_remove_peer, request_cb calling fpr_host_approve_peer)
+ * callbacks invoked while a caller holds it (on_data calling
+ * fpr_remove_peer, request_cb calling fpr_host_approve)
  * re-enter safely on the same task. */
 static inline void _peers_lock(fpr_node_t *net)
 {
@@ -215,9 +215,9 @@ static inline void _peer_clear_session(FPR_STORE_HASH_TYPE *peer)
 }
 
 /* Node-callback dispatch — a ctx-carrying node callback set via
- * fpr_node_config_t wins; the ctx-less legacy config field is the
- * fallback so fpr_*_set_config()/fpr_register_receive_callback()
- * callers behave identically. */
+ * fpr_node_config_t wins; the ctx-less config field is the fallback
+ * so fpr_*_set_config()/fpr_set_callbacks() callers behave
+ * identically. */
 static inline void _cb_peer_discovered(fpr_node_t *net, const uint8_t *mac,
                                        const char *name, int8_t rssi)
 {
@@ -256,17 +256,13 @@ static inline bool _cb_conn_request(fpr_node_t *net, const uint8_t *mac,
     return net->host_config.request_cb(mac, name, key);
 }
 
-/* The legacy data callback receives (&peer_mac, &union, &len) — the
- * "user_data" arg has always carried the length pointer, never a user
- * pointer. The node callback gets a plain (mac, data, len) triple. */
+/* The node data callback gets a plain (mac, data, len) triple plus the
+ * config-supplied user pointer. */
 static inline void _cb_data(fpr_node_t *net, const uint8_t *peer_mac,
                             void *data, int len)
 {
     if (net->callbacks.on_data) {
         net->callbacks.on_data(net->callbacks.user, peer_mac, data, (size_t)len);
-    } else if (net->data_callback) {
-        int l = len;
-        net->data_callback((void *)peer_mac, data, &l);
     }
 }
 

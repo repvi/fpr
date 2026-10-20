@@ -36,29 +36,35 @@ Complete API documentation for the Fast Peer Router (FPR) library.
 
 Core functions for initializing and managing the FPR network.
 
-### `fpr_network_init()`
+### `fpr_create()`
 
-Initialize the FPR network with a device name.
+Allocate and initialize a node.
 
 ```c
-esp_err_t fpr_network_init(const char *name);
+esp_err_t fpr_create(const fpr_node_config_t *cfg, fpr_node_t **out);
 ```
 
 **Parameters:**
-- `name` - Device name (max 31 characters)
+- `cfg` - Node configuration (device name, init config, callbacks)
+- `out` - Receives the node handle
 
 **Returns:**
 - `ESP_OK` on success
-- Error code on failure
+- `ESP_ERR_INVALID_ARG` / `ESP_ERR_NO_MEM` on failure
 
 **Notes:**
-- Must be called before any other FPR functions
-- WiFi must be initialized before calling this function
-- Device name is used for identification during discovery
+- WiFi must be initialized before calling this function (ESP-NOW transport)
+- For caller-provided storage use `fpr_init_at(&node, name, &init_cfg)`
 
 **Example:**
 ```c
-esp_err_t ret = fpr_network_init("MyDevice");
+fpr_node_config_t cfg = {
+    .name = "MyDevice",
+    .init = FPR_INIT_CONFIG_DEFAULT(),
+    .callbacks = { .user = NULL, .on_data = my_rx_cb },
+};
+fpr_node_t *node = NULL;
+esp_err_t ret = fpr_create(&cfg, &node);
 if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to initialize FPR: %s", esp_err_to_name(ret));
 }
@@ -66,32 +72,26 @@ if (ret != ESP_OK) {
 
 ---
 
-### `fpr_network_deinit()`
-
-Deinitialize the FPR network and release all resources.
+### `fpr_deinit()` / `fpr_destroy()`
 
 ```c
-esp_err_t fpr_network_deinit();
+esp_err_t fpr_deinit(fpr_node_t *node);   /* caller-provided storage */
+void      fpr_destroy(fpr_node_t *node);  /* fpr_create()'d nodes     */
 ```
 
-**Returns:**
-- `ESP_OK` on success
-- Error code on failure
-
-**Notes:**
-- Stops all running tasks
-- Releases allocated memory
-- Removes all peers
-- Should be called before application exit
+Stop the node and release protocol resources. `fpr_destroy` also frees
+the node itself; call `fpr_stop()` and stop node tasks first.
 
 ---
 
-### `fpr_network_start()`
+---
+
+### `fpr_start()`
 
 Start the FPR network operations.
 
 ```c
-esp_err_t fpr_network_start();
+esp_err_t fpr_start(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -99,18 +99,18 @@ esp_err_t fpr_network_start();
 - Error code on failure
 
 **Notes:**
-- Mode must be set before starting (via `fpr_network_set_mode()`)
+- Mode must be set before starting (via `fpr_set_mode()`)
 - Begins listening for ESP-NOW packets
 - Initializes internal state machines
 
 ---
 
-### `fpr_network_stop()`
+### `fpr_stop()`
 
 Stop the FPR network operations.
 
 ```c
-esp_err_t fpr_network_stop();
+esp_err_t fpr_stop(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -119,8 +119,8 @@ esp_err_t fpr_network_stop();
 
 **Notes:**
 - Stops discovery and maintenance tasks
-- Does not release resources (use `fpr_network_deinit()` for cleanup)
-- Can be restarted with `fpr_network_start()`
+- Does not release resources (use `fpr_deinit()`/`fpr_destroy()` for cleanup)
+- Can be restarted with `fpr_start()`
 
 ---
 
@@ -128,12 +128,12 @@ esp_err_t fpr_network_stop();
 
 Functions for managing network state and controlling pause/resume functionality.
 
-### `fpr_network_get_state()`
+### `fpr_get_state()`
 
 Get the current network state.
 
 ```c
-fpr_network_state_t fpr_network_get_state(void);
+fpr_state_t fpr_get_state(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -146,19 +146,19 @@ fpr_network_state_t fpr_network_get_state(void);
 
 **Example:**
 ```c
-if (fpr_network_get_state() == FPR_STATE_STARTED) {
+if (fpr_get_state(node) == FPR_STATE_STARTED) {
     printf("Network is running\n");
 }
 ```
 
 ---
 
-### `fpr_network_pause()`
+### `fpr_pause()`
 
 Pause the FPR network without full stop.
 
 ```c
-esp_err_t fpr_network_pause(void);
+esp_err_t fpr_pause(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -169,25 +169,25 @@ esp_err_t fpr_network_pause(void);
 - Paused network blocks all send operations
 - Incoming packets are dropped
 - Connections and peer state are maintained
-- Can be resumed with `fpr_network_resume()`
+- Can be resumed with `fpr_resume()`
 - Useful for temporarily suspending network activity
 
 **Example:**
 ```c
 // Pause during critical operation
-fpr_network_pause();
+fpr_pause(node);
 perform_critical_operation();
-fpr_network_resume();
+fpr_resume(node);
 ```
 
 ---
 
-### `fpr_network_resume()`
+### `fpr_resume()`
 
 Resume the FPR network after pause.
 
 ```c
-esp_err_t fpr_network_resume(void);
+esp_err_t fpr_resume(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -204,12 +204,12 @@ esp_err_t fpr_network_resume(void);
 
 Functions for setting and querying the network operating mode.
 
-### `fpr_network_set_mode()`
+### `fpr_set_mode()`
 
 Set the network operating mode.
 
 ```c
-void fpr_network_set_mode(fpr_mode_type_t mode);
+void fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode);
 ```
 
 **Parameters:**
@@ -221,24 +221,24 @@ void fpr_network_set_mode(fpr_mode_type_t mode);
   - `FPR_MODE_BROADCAST` - Broadcast mode (send-only)
 
 **Notes:**
-- Should be called before `fpr_network_start()`
+- Should be called before `fpr_start()`
 - Changing mode while running requires stop/start cycle
 - Host mode initializes security subsystem
 
 **Example:**
 ```c
-fpr_network_set_mode(FPR_MODE_HOST);
-fpr_network_start();
+fpr_set_mode(node, FPR_MODE_HOST);
+fpr_start(node);
 ```
 
 ---
 
-### `fpr_network_get_mode()`
+### `fpr_get_mode()`
 
 Get the current network operating mode.
 
 ```c
-fpr_mode_type_t fpr_network_get_mode();
+fpr_mode_type_t fpr_get_mode(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -250,16 +250,18 @@ fpr_mode_type_t fpr_network_get_mode();
 
 Functions for managing network discovery and connection maintenance.
 
-### `fpr_network_start_loop_task()`
+### `fpr_start_loop_task()`
 
 Start the network discovery and maintenance loop task.
 
 ```c
-esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart);
+esp_err_t fpr_start_loop_task(fpr_node_t *node, uint32_t duration_ms,
+                              const fpr_task_slot_t *slot, bool force_restart);
 ```
 
 **Parameters:**
-- `duration` - How long to run (in FreeRTOS ticks). Use `portMAX_DELAY` for infinite
+- `duration_ms` - How long to run, in milliseconds (`0`/`UINT32_MAX` = unbounded)
+- `slot` - Caller-owned static task storage (`fpr_task_slot_t`: stack buffer + TCB + priority + core)
 - `force_restart` - If `true`, restarts task even if already running
 
 **Returns:**
@@ -273,21 +275,23 @@ esp_err_t fpr_network_start_loop_task(TickType_t duration, bool force_restart);
 
 **Example:**
 ```c
-// Run discovery for 30 seconds
-fpr_network_start_loop_task(pdMS_TO_TICKS(30000), false);
-
-// Run discovery indefinitely
-fpr_network_start_loop_task(portMAX_DELAY, false);
+static StackType_t loop_stack[4096 / sizeof(StackType_t)];
+static StaticTask_t loop_tcb;
+const fpr_task_slot_t slot = {
+    .stack = loop_stack, .stack_bytes = sizeof(loop_stack),
+    .tcb = &loop_tcb, .priority = 5, .core = 0,
+};
+fpr_start_loop_task(node, 30000, &slot, false);   // 30 s discovery
 ```
 
 ---
 
-### `fpr_network_stop_loop_task()`
+### `fpr_stop_loop_task()`
 
 Stop the network discovery and maintenance loop task.
 
 ```c
-esp_err_t fpr_network_stop_loop_task();
+esp_err_t fpr_stop_loop_task(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -296,12 +300,12 @@ esp_err_t fpr_network_stop_loop_task();
 
 ---
 
-### `fpr_network_is_loop_task_running()`
+### `fpr_loop_task_running()`
 
 Check if the loop task is currently running.
 
 ```c
-bool fpr_network_is_loop_task_running();
+bool fpr_loop_task_running(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -310,17 +314,21 @@ bool fpr_network_is_loop_task_running();
 
 ---
 
-### `fpr_network_start_reconnect_task()`
+### `fpr_start_reconnect_task()`
 
 Start persistent background reconnect and keepalive monitoring.
 
 ```c
-esp_err_t fpr_network_start_reconnect_task(void);
+esp_err_t fpr_start_reconnect_task(fpr_node_t *node,
+                                   const fpr_task_slot_t *slot);
 ```
 
 **Returns:**
 - `ESP_OK` on success
 - `ESP_ERR_INVALID_STATE` if already running
+
+**Parameters:**
+- `slot` - Caller-owned static task storage (`fpr_task_slot_t`)
 
 **Notes:**
 - Automatically monitors connection state
@@ -330,12 +338,12 @@ esp_err_t fpr_network_start_reconnect_task(void);
 
 ---
 
-### `fpr_network_stop_reconnect_task()`
+### `fpr_stop_reconnect_task()`
 
 Stop the reconnect and keepalive monitoring task.
 
 ```c
-esp_err_t fpr_network_stop_reconnect_task(void);
+esp_err_t fpr_stop_reconnect_task(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -343,12 +351,12 @@ esp_err_t fpr_network_stop_reconnect_task(void);
 
 ---
 
-### `fpr_network_is_reconnect_task_running()`
+### `fpr_reconnect_task_running()`
 
 Check if the reconnect task is running.
 
 ```c
-bool fpr_network_is_reconnect_task_running(void);
+bool fpr_reconnect_task_running(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -361,12 +369,12 @@ bool fpr_network_is_reconnect_task_running(void);
 
 Functions for sending data to peers.
 
-### `fpr_network_send_to_peer()`
+### `fpr_send()`
 
 Send data to a specific peer.
 
 ```c
-esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
+esp_err_t fpr_send(fpr_node_t *node, uint8_t *peer_address, void *data, int size, fpr_package_id_t package_id);
 ```
 
 **Parameters:**
@@ -383,17 +391,17 @@ esp_err_t fpr_network_send_to_peer(uint8_t *peer_address, void *data, int size, 
 ```c
 uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 char message[] = "Hello!";
-esp_err_t ret = fpr_network_send_to_peer(peer_mac, message, strlen(message), 1);
+esp_err_t ret = fpr_send(node, peer_mac, message, strlen(message), 1);
 ```
 
 ---
 
-### `fpr_network_broadcast()`
+### `fpr_broadcast()`
 
 Broadcast data to all peers.
 
 ```c
-esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_id);
+esp_err_t fpr_broadcast(fpr_node_t *node, void *data, int size, fpr_package_id_t package_id);
 ```
 
 **Parameters:**
@@ -408,17 +416,17 @@ esp_err_t fpr_network_broadcast(void *data, int size, fpr_package_id_t package_i
 **Example:**
 ```c
 char announcement[] = "Server started";
-fpr_network_broadcast(announcement, strlen(announcement), 1);
+fpr_broadcast(node, announcement, strlen(announcement), 1);
 ```
 
 ---
 
-### `fpr_send_with_options()`
+### `fpr_send_opts()`
 
 Send data with custom routing options.
 
 ```c
-esp_err_t fpr_send_with_options(uint8_t *peer_address, void *data, int size, const fpr_send_options_t *options);
+esp_err_t fpr_send_opts(fpr_node_t *node, uint8_t *peer_address, void *data, int size, const fpr_send_options_t *options);
 ```
 
 **Parameters:**
@@ -439,17 +447,17 @@ fpr_send_options_t opts = {
     .package_id = 1,
     .max_hops = 3
 };
-fpr_send_with_options(peer_mac, data, size, &opts);
+fpr_send_opts(node, peer_mac, data, size, &opts);
 ```
 
 ---
 
-### `fpr_network_send_device_info()`
+### `fpr_send_device_info()`
 
 Send device information to a specific peer.
 
 ```c
-esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
+esp_err_t fpr_send_device_info(fpr_node_t *node, uint8_t *peer_address);
 ```
 
 **Parameters:**
@@ -465,12 +473,12 @@ esp_err_t fpr_network_send_device_info(uint8_t *peer_address);
 
 ---
 
-### `fpr_network_broadcast_device_info()`
+### `fpr_broadcast_device_info()`
 
 Broadcast device information to all reachable peers.
 
 ```c
-esp_err_t fpr_network_broadcast_device_info();
+esp_err_t fpr_broadcast_device_info(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -483,47 +491,57 @@ esp_err_t fpr_network_broadcast_device_info();
 
 ---
 
-### `fpr_register_receive_callback()`
+### `fpr_set_callbacks()`
 
-Register a callback for receiving application data.
+Replace the node's callback table. All callbacks are context-carrying —
+the `user` pointer comes from the table.
 
 ```c
-void fpr_register_receive_callback(fpr_data_receive_cb_t callback);
+esp_err_t fpr_set_callbacks(fpr_node_t *node, const fpr_node_callbacks_t *callbacks);
 ```
 
-**Parameters:**
-- `callback` - Function to call when data is received (or `NULL` to unregister)
-
-**Callback Signature:**
+**Callback table:**
 ```c
-typedef void(*fpr_data_receive_cb_t)(void *peer_addr, void *data, void *user_data);
+typedef void (*fpr_data_cb_t)(void *user, const uint8_t *peer_mac,
+                              void *data, size_t len);
+
+typedef struct {
+    void *user;
+    fpr_data_cb_t on_data;
+    bool (*on_connection_request)(void *user, const uint8_t *peer_mac,
+                                  const char *peer_name, uint32_t peer_key);
+    void (*on_peer_discovered)(void *user, const uint8_t *peer_mac,
+                               const char *peer_name, int8_t rssi);
+    bool (*on_host_selection)(void *user, const uint8_t *peer_mac,
+                              const char *peer_name, int8_t rssi);
+} fpr_node_callbacks_t;
 ```
 
 **Example:**
 ```c
-void on_data_received(void *peer_addr, void *data, void *user_data) {
-    uint8_t *mac = (uint8_t*)peer_addr;
-    printf("Data from %02X:%02X:%02X:%02X:%02X:%02X: %s\n",
-           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (char*)data);
+void on_data_received(void *user, const uint8_t *mac, void *data, size_t len) {
+    printf("Data from %02X:%02X:%02X:%02X:%02X:%02X: %.*s
+",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], (int)len, (char*)data);
 }
 
-fpr_register_receive_callback(on_data_received);
+fpr_set_callbacks(node, &(fpr_node_callbacks_t){ .on_data = on_data_received });
 ```
 
 ---
 
-### `fpr_network_get_data_from_peer()`
+### `fpr_recv_from()`
 
 Wait for and retrieve data from a specific peer (blocking).
 
 ```c
-bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size, TickType_t timeout);
+bool fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data, int data_size, uint32_t timeout_ms);
 ```
 
 **Parameters:**
 - `peer_mac` - MAC address of peer to receive from
-- `received_value` - Buffer to store received data
-- `timeout` - Maximum wait time (in FreeRTOS ticks)
+- `data` - Buffer to store received data
+- `timeout_ms` - Maximum wait in milliseconds (`UINT32_MAX` = forever)
 
 **Returns:**
 - `true` if data received within timeout
@@ -531,7 +549,7 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
 
 **Notes:**
 - This is a **blocking** call
-- Use callback API (`fpr_register_receive_callback()`) for non-blocking reception
+- Use callback API (`fpr_set_callbacks()`) for non-blocking reception
 
 ---
 
@@ -539,12 +557,12 @@ bool fpr_network_get_data_from_peer(uint8_t *peer_mac, void *data, int data_size
 
 Functions for managing peers in the network.
 
-### `fpr_network_add_peer()`
+### `fpr_add_peer()`
 
 Manually add a peer to the network.
 
 ```c
-esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
+esp_err_t fpr_add_peer(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -560,12 +578,12 @@ esp_err_t fpr_network_add_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_network_remove_peer()`
+### `fpr_remove_peer()`
 
 Remove a peer from the network.
 
 ```c
-esp_err_t fpr_network_remove_peer(uint8_t *peer_mac);
+esp_err_t fpr_remove_peer(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -577,12 +595,12 @@ esp_err_t fpr_network_remove_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_network_get_peer_count()`
+### `fpr_peer_count()`
 
 Get the number of discovered peers.
 
 ```c
-int fpr_network_get_peer_count();
+int fpr_peer_count(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -590,12 +608,12 @@ int fpr_network_get_peer_count();
 
 ---
 
-### `fpr_get_peer_by_name()`
+### `fpr_peer_by_name()`
 
 Find a peer by name.
 
 ```c
-esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out);
+esp_err_t fpr_peer_by_name(fpr_node_t *node, const char *peer_name, uint8_t *mac_out);
 ```
 
 **Parameters:**
@@ -610,19 +628,19 @@ esp_err_t fpr_get_peer_by_name(const char *peer_name, uint8_t *mac_out);
 **Example:**
 ```c
 uint8_t peer_mac[6];
-if (fpr_get_peer_by_name("Device-123", peer_mac) == ESP_OK) {
-    fpr_network_send_to_peer(peer_mac, data, size, 1);
+if (fpr_peer_by_name(node, "Device-123", peer_mac) == ESP_OK) {
+    fpr_send(node, peer_mac, data, size, 1);
 }
 ```
 
 ---
 
-### `fpr_clear_all_peers()`
+### `fpr_clear_peers()`
 
 Remove all peers from the network.
 
 ```c
-esp_err_t fpr_clear_all_peers(void);
+esp_err_t fpr_clear_peers(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -636,17 +654,17 @@ esp_err_t fpr_clear_all_peers(void);
 **Example:**
 ```c
 // Reset network and clear all peers
-fpr_clear_all_peers();
+fpr_clear_peers(node);
 ```
 
 ---
 
-### `fpr_is_peer_reachable()`
+### `fpr_peer_reachable()`
 
 Check if a specific peer is currently reachable.
 
 ```c
-bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms);
+bool fpr_peer_reachable(fpr_node_t *node, uint8_t *peer_mac, uint32_t timeout_ms);
 ```
 
 **Parameters:**
@@ -665,7 +683,7 @@ bool fpr_is_peer_reachable(uint8_t *peer_mac, uint32_t timeout_ms);
 **Example:**
 ```c
 uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-if (fpr_is_peer_reachable(peer_mac, 1000)) {
+if (fpr_peer_reachable(node, peer_mac, 1000)) {
     printf("Peer is alive!\n");
 } else {
     printf("Peer is unreachable\n");
@@ -674,29 +692,29 @@ if (fpr_is_peer_reachable(peer_mac, 1000)) {
 
 ---
 
-### `fpr_network_get_peers()`
+### `fpr_foreach_peer()`
 
 Iterate through all known peers with a callback.
 
 ```c
-size_t fpr_network_get_peers(fpr_data_receive_cb_t callback, void *user_data);
+size_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user);
 ```
 
 **Parameters:**
-- `callback` - Function to call for each peer
-- `user_data` - Arbitrary user data passed to callback
+- `callback` - `void (*)(void *user, const uint8_t *peer_mac, void *peer)` — `peer` is the internal store (opaque); use `fpr_peer_info()` for details
+- `user` - Arbitrary user context passed to the callback
 
 **Returns:**
 - Number of peers iterated
 
 ---
 
-### `fpr_get_peer_info()`
+### `fpr_peer_info()`
 
 Get detailed information about a specific peer.
 
 ```c
-esp_err_t fpr_get_peer_info(uint8_t *peer_mac, fpr_peer_info_t *info);
+esp_err_t fpr_peer_info(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_info_t *info);
 ```
 
 **Parameters:**
@@ -723,12 +741,12 @@ typedef struct {
 
 ---
 
-### `fpr_list_all_peers()`
+### `fpr_list_peers()`
 
 List all discovered peers.
 
 ```c
-size_t fpr_list_all_peers(fpr_peer_info_t *peer_array, size_t max_peers);
+size_t fpr_list_peers(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
 ```
 
 **Parameters:**
@@ -741,7 +759,7 @@ size_t fpr_list_all_peers(fpr_peer_info_t *peer_array, size_t max_peers);
 **Example:**
 ```c
 fpr_peer_info_t peers[20];
-size_t count = fpr_list_all_peers(peers, 20);
+size_t count = fpr_list_peers(node, peers, 20);
 for (size_t i = 0; i < count; i++) {
     printf("Peer %zu: %s (%02X:%02X:...)\n", i, peers[i].name, 
            peers[i].mac[0], peers[i].mac[1]);
@@ -750,12 +768,12 @@ for (size_t i = 0; i < count; i++) {
 
 ---
 
-### `fpr_network_set_permission_state()`
+### `fpr_set_visibility()`
 
 Set network visibility/permission state.
 
 ```c
-void fpr_network_set_permission_state(fpr_visibility_t state);
+void fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
 ```
 
 **Parameters:**
@@ -768,12 +786,12 @@ void fpr_network_set_permission_state(fpr_visibility_t state);
 
 ---
 
-### `fpr_network_get_permission_state()`
+### `fpr_get_visibility()`
 
 Get current network visibility/permission state.
 
 ```c
-fpr_visibility_t fpr_network_get_permission_state(void);
+fpr_visibility_t fpr_get_visibility(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -790,7 +808,7 @@ Functions specific to client mode operation.
 Configure client mode behavior.
 
 ```c
-esp_err_t fpr_client_set_config(const fpr_client_config_t *config);
+esp_err_t fpr_client_set_config(fpr_node_t *node, const fpr_client_config_t *config);
 ```
 
 **Parameters:**
@@ -812,7 +830,7 @@ fpr_client_config_t config = {
     .connection_mode = FPR_CONNECTION_AUTO,
     .discovery_cb = on_host_discovered
 };
-fpr_client_set_config(&config);
+fpr_client_set_config(node, &config);
 ```
 
 ---
@@ -822,7 +840,7 @@ fpr_client_set_config(&config);
 Get current client configuration.
 
 ```c
-esp_err_t fpr_client_get_config(fpr_client_config_t *config);
+esp_err_t fpr_client_get_config(fpr_node_t *node, fpr_client_config_t *config);
 ```
 
 **Parameters:**
@@ -834,12 +852,12 @@ esp_err_t fpr_client_get_config(fpr_client_config_t *config);
 
 ---
 
-### `fpr_client_is_connected()`
+### `fpr_client_connected()`
 
 Check if client is connected to a host.
 
 ```c
-bool fpr_client_is_connected(void);
+bool fpr_client_connected(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -848,12 +866,12 @@ bool fpr_client_is_connected(void);
 
 ---
 
-### `fpr_client_get_host_info()`
+### `fpr_client_host_info()`
 
 Get information about the connected host.
 
 ```c
-esp_err_t fpr_client_get_host_info(uint8_t *mac_out, char *name_out, size_t name_size);
+esp_err_t fpr_client_host_info(fpr_node_t *node, uint8_t *mac_out, char *name_out, size_t name_size);
 ```
 
 **Parameters:**
@@ -867,12 +885,12 @@ esp_err_t fpr_client_get_host_info(uint8_t *mac_out, char *name_out, size_t name
 
 ---
 
-### `fpr_client_list_discovered_hosts()`
+### `fpr_client_hosts()`
 
 List all discovered hosts available for connection.
 
 ```c
-size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_peers);
+size_t fpr_client_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
 ```
 
 **Parameters:**
@@ -884,16 +902,16 @@ size_t fpr_client_list_discovered_hosts(fpr_peer_info_t *peer_array, size_t max_
 
 ---
 
-### `fpr_client_scan_for_hosts()`
+### `fpr_client_scan()`
 
 Start scanning for available hosts without connecting.
 
 ```c
-size_t fpr_client_scan_for_hosts(TickType_t duration);
+size_t fpr_client_scan(fpr_node_t *node, uint32_t duration_ms);
 ```
 
 **Parameters:**
-- `duration` - How long to scan (in FreeRTOS ticks)
+- `duration` - How long to scan (in FreeRTOS ms)
 
 **Returns:**
 - Number of hosts discovered
@@ -901,18 +919,18 @@ size_t fpr_client_scan_for_hosts(TickType_t duration);
 **Example:**
 ```c
 // Scan for 5 seconds
-size_t count = fpr_client_scan_for_hosts(pdMS_TO_TICKS(5000));
+size_t count = fpr_client_scan(node, 5000);
 printf("Found %zu hosts\n", count);
 ```
 
 ---
 
-### `fpr_client_connect_to_host()`
+### `fpr_client_connect()`
 
 Manually connect to a specific discovered host.
 
 ```c
-esp_err_t fpr_client_connect_to_host(uint8_t *peer_mac, TickType_t timeout);
+esp_err_t fpr_client_connect(fpr_node_t *node, uint8_t *peer_mac, uint32_t timeout_ms);
 ```
 
 **Parameters:**
@@ -933,7 +951,7 @@ esp_err_t fpr_client_connect_to_host(uint8_t *peer_mac, TickType_t timeout);
 Disconnect from the current host.
 
 ```c
-esp_err_t fpr_client_disconnect(void);
+esp_err_t fpr_client_disconnect(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -951,7 +969,7 @@ Functions specific to host mode operation.
 Configure host mode behavior.
 
 ```c
-esp_err_t fpr_host_set_config(const fpr_host_config_t *config);
+esp_err_t fpr_host_set_config(fpr_node_t *node, const fpr_host_config_t *config);
 ```
 
 **Parameters:**
@@ -976,7 +994,7 @@ fpr_host_config_t config = {
     .connection_mode = FPR_CONNECTION_MANUAL,
     .request_cb = on_connection_request
 };
-fpr_host_set_config(&config);
+fpr_host_set_config(node, &config);
 ```
 
 ---
@@ -986,7 +1004,7 @@ fpr_host_set_config(&config);
 Get current host configuration.
 
 ```c
-esp_err_t fpr_host_get_config(fpr_host_config_t *config);
+esp_err_t fpr_host_get_config(fpr_node_t *node, fpr_host_config_t *config);
 ```
 
 **Parameters:**
@@ -998,12 +1016,12 @@ esp_err_t fpr_host_get_config(fpr_host_config_t *config);
 
 ---
 
-### `fpr_host_get_connected_count()`
+### `fpr_host_peer_count()`
 
 Get count of connected peers.
 
 ```c
-size_t fpr_host_get_connected_count(void);
+size_t fpr_host_peer_count(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -1011,12 +1029,12 @@ size_t fpr_host_get_connected_count(void);
 
 ---
 
-### `fpr_host_approve_peer()`
+### `fpr_host_approve()`
 
 Manually approve a pending connection request.
 
 ```c
-esp_err_t fpr_host_approve_peer(uint8_t *peer_mac);
+esp_err_t fpr_host_approve(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -1031,12 +1049,12 @@ esp_err_t fpr_host_approve_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_host_reject_peer()`
+### `fpr_host_reject()`
 
 Manually reject a connection request.
 
 ```c
-esp_err_t fpr_host_reject_peer(uint8_t *peer_mac);
+esp_err_t fpr_host_reject(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -1048,12 +1066,12 @@ esp_err_t fpr_host_reject_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_host_block_peer()`
+### `fpr_host_block()`
 
 Block a peer from connecting.
 
 ```c
-esp_err_t fpr_host_block_peer(uint8_t *peer_mac);
+esp_err_t fpr_host_block(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -1068,12 +1086,12 @@ esp_err_t fpr_host_block_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_host_unblock_peer()`
+### `fpr_host_unblock()`
 
 Unblock a previously blocked peer.
 
 ```c
-esp_err_t fpr_host_unblock_peer(uint8_t *peer_mac);
+esp_err_t fpr_host_unblock(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -1085,12 +1103,12 @@ esp_err_t fpr_host_unblock_peer(uint8_t *peer_mac);
 
 ---
 
-### `fpr_host_disconnect_peer()`
+### `fpr_host_disconnect()`
 
 Disconnect a connected peer.
 
 ```c
-esp_err_t fpr_host_disconnect_peer(uint8_t *peer_mac);
+esp_err_t fpr_host_disconnect(fpr_node_t *node, uint8_t *peer_mac);
 ```
 
 **Parameters:**
@@ -1106,12 +1124,12 @@ esp_err_t fpr_host_disconnect_peer(uint8_t *peer_mac);
 
 Functions for querying network state and information.
 
-### `fpr_cleanup_stale_routes()`
+### `fpr_prune_routes()`
 
 Remove stale routes from the routing table.
 
 ```c
-size_t fpr_cleanup_stale_routes(uint32_t timeout_ms);
+size_t fpr_prune_routes(fpr_node_t *node, uint32_t timeout_ms);
 ```
 
 **Parameters:**
@@ -1123,18 +1141,18 @@ size_t fpr_cleanup_stale_routes(uint32_t timeout_ms);
 **Example:**
 ```c
 // Remove routes older than 30 seconds
-size_t removed = fpr_cleanup_stale_routes(30000);
+size_t removed = fpr_prune_routes(node, 30000);
 printf("Removed %zu stale routes\n", removed);
 ```
 
 ---
 
-### `fpr_print_route_table()`
+### `fpr_print_routes()`
 
 Print the routing table to log for debugging.
 
 ```c
-void fpr_print_route_table(void);
+void fpr_print_routes(fpr_node_t *node);
 ```
 
 **Notes:**
@@ -1147,12 +1165,12 @@ void fpr_print_route_table(void);
 
 Functions for collecting network statistics and diagnostics.
 
-### `fpr_get_network_stats()`
+### `fpr_get_stats()`
 
 Get network statistics.
 
 ```c
-void fpr_get_network_stats(fpr_network_stats_t *stats);
+void fpr_get_stats(fpr_node_t *node, fpr_stats_t *stats);
 ```
 
 **Parameters:**
@@ -1167,25 +1185,25 @@ typedef struct {
     uint32_t packets_dropped;
     uint32_t send_failures;
     size_t peer_count;
-} fpr_network_stats_t;
+} fpr_stats_t;
 ```
 
 **Example:**
 ```c
-fpr_network_stats_t stats;
-fpr_get_network_stats(&stats);
+fpr_stats_t stats;
+fpr_get_stats(node, &stats);
 printf("Sent: %lu, Received: %lu, Dropped: %lu\n",
        stats.packets_sent, stats.packets_received, stats.packets_dropped);
 ```
 
 ---
 
-### `fpr_reset_network_stats()`
+### `fpr_reset_stats()`
 
 Reset all network statistics counters to zero.
 
 ```c
-void fpr_reset_network_stats(void);
+void fpr_reset_stats(fpr_node_t *node);
 ```
 
 ---
@@ -1299,7 +1317,7 @@ typedef enum {
 
 ---
 
-#### `fpr_network_state_t`
+#### `fpr_state_t`
 
 Network state enumeration.
 
@@ -1310,7 +1328,7 @@ typedef enum {
     FPR_STATE_STARTED,            // Started and running
     FPR_STATE_PAUSED,             // Paused (can be resumed)
     FPR_STATE_STOPPED             // Stopped (can be restarted)
-} fpr_network_state_t;
+} fpr_state_t;
 ```
 
 ---
@@ -1336,7 +1354,7 @@ typedef struct {
 
 ---
 
-#### `fpr_network_stats_t`
+#### `fpr_stats_t`
 
 Network statistics.
 
@@ -1348,7 +1366,7 @@ typedef struct {
     uint32_t packets_dropped;      // Dropped packets
     uint32_t send_failures;        // Failed send attempts
     size_t peer_count;             // Current peer count
-} fpr_network_stats_t;
+} fpr_stats_t;
 ```
 
 ---
@@ -1411,18 +1429,28 @@ fpr_client_config_t config = {
 
 ### Callback Types
 
-#### `fpr_data_receive_cb_t`
+#### `fpr_data_cb_t`
 
-Callback for receiving data.
+Application-data callback (set via `fpr_node_callbacks_t.on_data`).
 
 ```c
-typedef void(*fpr_data_receive_cb_t)(void *peer_addr, void *data, void *user_data);
+typedef void (*fpr_data_cb_t)(void *user, const uint8_t *peer_mac,
+                              void *data, size_t len);
 ```
 
 **Parameters:**
-- `peer_addr` - MAC address of sender (6 bytes)
+- `user` - Context pointer from the callback table
+- `peer_mac` - MAC address of sender (6 bytes)
 - `data` - Received data buffer
-- `user_data` - User-defined context
+- `len` - Payload length in bytes
+
+#### `fpr_peer_cb_t`
+
+Peer-iteration callback for `fpr_foreach_peer()`.
+
+```c
+typedef void (*fpr_peer_cb_t)(void *user, const uint8_t *peer_mac, void *peer);
+```
 
 ---
 
@@ -1529,8 +1557,14 @@ void app_main() {
     // Initialize WiFi (not shown - see ESP-IDF examples)
     wifi_init();
     
-    // Initialize FPR
-    esp_err_t ret = fpr_network_init("MyDevice");
+    // Create a node
+    fpr_node_config_t node_cfg = {
+        .name = "MyDevice",
+        .init = FPR_INIT_CONFIG_DEFAULT(),
+        .callbacks = { .on_data = on_data_received },
+    };
+    fpr_node_t *node = NULL;
+    esp_err_t ret = fpr_create(&node_cfg, &node);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "FPR init failed: %s", esp_err_to_name(ret));
         return;
@@ -1542,25 +1576,36 @@ void app_main() {
         .connection_mode = FPR_CONNECTION_AUTO,
         .request_cb = NULL
     };
-    fpr_host_set_config(&host_config);
+    fpr_host_set_config(node, &host_config);
     
     // Set mode and start
-    fpr_network_set_mode(FPR_MODE_HOST);
-    fpr_register_receive_callback(on_data_received);
-    fpr_network_start();
+    fpr_set_mode(node, FPR_MODE_HOST);
+    fpr_start(node);
     
-    // Start discovery
-    fpr_network_start_loop_task(portMAX_DELAY, false);
-    fpr_network_start_reconnect_task();
+    // Start discovery (caller-owned static task storage)
+    static StackType_t loop_stack[4096 / sizeof(StackType_t)];
+    static StaticTask_t loop_tcb;
+    const fpr_task_slot_t loop_slot = {
+        .stack = loop_stack, .stack_bytes = sizeof(loop_stack),
+        .tcb = &loop_tcb, .priority = 5, .core = 0,
+    };
+    static StackType_t recon_stack[4096 / sizeof(StackType_t)];
+    static StaticTask_t recon_tcb;
+    const fpr_task_slot_t recon_slot = {
+        .stack = recon_stack, .stack_bytes = sizeof(recon_stack),
+        .tcb = &recon_tcb, .priority = 5, .core = 0,
+    };
+    fpr_start_loop_task(node, UINT32_MAX, &loop_slot, false);
+    fpr_start_reconnect_task(node, &recon_slot);
     
     // Send periodic broadcasts
     while (1) {
         char msg[] = "Hello from host!";
-        fpr_network_broadcast(msg, strlen(msg), 1);
+        fpr_broadcast(node, msg, strlen(msg), 1);
         
         // Print stats
-        fpr_network_stats_t stats;
-        fpr_get_network_stats(&stats);
+        fpr_stats_t stats;
+        fpr_get_stats(node, &stats);
         printf("Peers: %zu, Sent: %lu, Received: %lu\n",
                stats.peer_count, stats.packets_sent, stats.packets_received);
         

@@ -203,14 +203,14 @@ fpr_data_size_test_stop();
 
 **Symptom:** "Size mismatch" or "Test ID mismatch"
 - **Cause:** Packet corruption or fragmentation issue
-- **Fix:** Check buffer sizes, ensure `fpr_network_get_data_from_peer()` is working correctly
+- **Fix:** Check buffer sizes, ensure `fpr_recv_from()` is working correctly
 
 **Symptom:** "No echo response"
 - **Cause:** Timeout or connection dropped
-- **Fix:** Increase timeout in `fpr_network_get_data_from_peer()`, check connection stability
+- **Fix:** Increase timeout in `fpr_recv_from()`, check connection stability
 
 **Symptom:** Tests pass but bytes don't match
-- **Cause:** Truncation in `fpr_network_get_data_from_peer()`
+- **Cause:** Truncation in `fpr_recv_from()`
 - **Fix:** Verify buffer allocation matches expected payload size
 
 ### Connection Issues

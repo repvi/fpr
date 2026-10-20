@@ -5,7 +5,7 @@
  * @brief FPR internal receive handlers and mode task bodies
  *
  * Entry points dispatched from the transport RX path and the task
- * bodies run by fpr_network_start_loop_task()/_start_reconnect_task().
+ * bodies run by fpr_start_loop_task()/fpr_start_reconnect_task().
  * Not public API — do not call directly.
  */
 
@@ -49,18 +49,8 @@ void _rx_host(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data,
 /** Extender-mode receive handler: route learning, forwarding, local delivery. */
 void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
-/* Cooperative task exit shared by the task bodies in fpr.c, fpr_client.c
- * and fpr_host.c — implemented in fpr.c next to _task_stop. */
-void _task_exit(fpr_node_t *net, TaskHandle_t *slot);
-
-/* Cooperative-stop helper + the unified task entries — used by the
- * node static-task API and the compat layer's dynamic tasks. */
-void _fpr_task_stop(fpr_node_t *net, TaskHandle_t *handle, volatile bool *stop_flag);
-void _fpr_loop_task_entry(void *arg);       /* arg = fpr_node_t* */
-void _fpr_reconnect_task_entry(void *arg);  /* arg = fpr_node_t* */
-
-/* Single-step bodies shared by the legacy tasks, the node tasks and
- * fpr_node_poll() — each performs one iteration of the periodic work. */
+/* Single-step bodies shared by the node tasks and fpr_poll() — each
+ * performs one iteration of the periodic work. */
 void _client_loop_step(fpr_node_t *net);
 void _host_loop_step(fpr_node_t *net);
 void _client_reconnect_step(fpr_node_t *net, uint32_t now_ms);

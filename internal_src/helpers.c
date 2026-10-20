@@ -114,7 +114,7 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
     net->stats.packets_received++;
     const uint8_t *peer_address = frame->src_mac;
     /* Recursive: callers in the RX path already hold peers_lock, and the
-     * data_callback below may call fpr_node_remove_peer() which takes
+     * on_data callback below may call fpr_remove_peer() which takes
      * it again on this same task. */
     _peers_lock(net);
     FPR_STORE_HASH_TYPE *store = _peer_from_map(net, peer_address);
@@ -186,7 +186,7 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
 
         /* Finish every store/queue access before invoking application
          * code: a callback may remove this peer or clear the peer map. */
-        if (net->callbacks.on_data || net->data_callback) {
+        if (net->callbacks.on_data) {
             fpr_package_t *package = (fpr_package_t *)data;
             const size_t cap = sizeof(package->protocol);
             int data_len = (int)((data->payload_size > 0 && data->payload_size <= cap)
@@ -201,7 +201,7 @@ esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, 
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     _peers_lock(net);
-    /* Quiesce gate: fpr_node_deinit flips state to UNINITIALIZED
+    /* Quiesce gate: fpr_deinit flips state to UNINITIALIZED
      * before emptying the maps — a callback still in flight from before
      * esp_now_deinit must not repopulate what teardown just cleared.
      * Every other state (INITIALIZED/STARTED/PAUSED/STOPPED) keeps the

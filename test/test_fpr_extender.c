@@ -19,9 +19,27 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "fpr/fpr.h"
+#include "fpr/internal/private_defs.h"
 #include "esp_mac.h"
 
 static const char *TAG = "FPR_EXTENDER_TEST";
+
+/* The app owns its node — static storage via fpr_init_at(). */
+static fpr_node_t s_node;
+static const fpr_init_config_t FPR_INIT_CFG = FPR_INIT_CONFIG_DEFAULT();
+
+static StackType_t s_loop_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_loop_tcb;
+static const fpr_task_slot_t s_loop_slot = {
+    .stack = s_loop_stack, .stack_bytes = sizeof(s_loop_stack),
+    .tcb = &s_loop_tcb, .priority = 5, .core = 0,
+};
+static StackType_t s_recon_stack[FPR_TASK_STACK_SIZE / sizeof(StackType_t)];
+static StaticTask_t s_recon_tcb;
+static const fpr_task_slot_t s_recon_slot = {
+    .stack = s_recon_stack, .stack_bytes = sizeof(s_recon_stack),
+    .tcb = &s_recon_tcb, .priority = 5, .core = 0,
+};
 
 // Statistics
 static uint32_t messages_relayed = 0;
@@ -34,7 +52,7 @@ static TaskHandle_t monitor_task_handle = NULL;
 /**
  * Note: Extender mode operates automatically without callbacks.
  * The FPR library handles message relaying internally.
- * Statistics are retrieved via fpr_get_network_stats().
+ * Statistics are retrieved via fpr_get_stats(&s_node).
  */
 
 /**
@@ -47,8 +65,8 @@ static void stats_task(void *pvParameters)
     while (1) {
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10000)); // Every 10 seconds
         
-        fpr_network_stats_t stats;
-        fpr_get_network_stats(&stats);
+        fpr_stats_t stats;
+        fpr_get_stats(&s_node, &stats);
         
         ESP_LOGI(TAG, "========== STATISTICS ==========");
         ESP_LOGI(TAG, "Packets sent: %lu", (unsigned long)stats.packets_sent);
@@ -61,11 +79,11 @@ static void stats_task(void *pvParameters)
         
         // Show queue depths for all known peers
         fpr_peer_info_t peers[10];
-        size_t count = fpr_list_all_peers(peers, 10);
+        size_t count = fpr_list_peers(&s_node, peers, 10);
         if (count > 0) {
             ESP_LOGI(TAG, "=== Peer Queue Status ===");
             for (size_t i = 0; i < count; i++) {
-                uint32_t q = fpr_network_get_peer_queued_packets(peers[i].mac);
+                uint32_t q = fpr_peer_queued_packets(&s_node, peers[i].mac);
                 ESP_LOGI(TAG, "  %s (" MACSTR "): %lu queued, state=%d",
                          peers[i].name, MAC2STR(peers[i].mac), (unsigned long)q, peers[i].state);
             }
@@ -114,8 +132,8 @@ static void monitor_task(void *pvParameters)
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(60000)); // Every minute
         
-        fpr_network_stats_t stats;
-        fpr_get_network_stats(&stats);
+        fpr_stats_t stats;
+        fpr_get_stats(&s_node, &stats);
         
         ESP_LOGI(TAG, "[MONITOR] Extender running, %lu messages forwarded", 
                  (unsigned long)stats.packets_forwarded);
@@ -152,7 +170,7 @@ esp_err_t fpr_extender_test_start(void)
     
     // Initialize FPR
     ESP_LOGI(TAG, "Initializing FPR network...");
-    ret = fpr_network_init("FPR-Extender-Test");
+    ret = fpr_init_at(&s_node, "FPR-Extender-Test", &FPR_INIT_CFG);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "FPR init failed: %s", esp_err_to_name(ret));
         return ret;
@@ -160,12 +178,12 @@ esp_err_t fpr_extender_test_start(void)
     ESP_LOGI(TAG, "FPR network initialized");
     
     // Set mode to extender (no configuration needed)
-    fpr_network_set_mode(FPR_MODE_EXTENDER);
+    fpr_set_mode(&s_node, FPR_MODE_EXTENDER);
     ESP_LOGI(TAG, "Mode set to EXTENDER");
     
     // Start the network
     ESP_LOGI(TAG, "Starting FPR network...");
-    ret = fpr_network_start();
+    ret = fpr_start(&s_node);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start network: %s", esp_err_to_name(ret));
         return ret;

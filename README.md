@@ -97,18 +97,18 @@ void app_main() {
     wifi_init();
     
     // Initialize FPR network
-    fpr_network_init("MyDevice");
+    fpr_init_at("MyDevice");
     
     // Register callback for incoming data
-    fpr_register_receive_callback(on_data_received);
+    fpr_set_callbacks(on_data_received);
     
     // Set device mode and start network
-    fpr_network_set_mode(FPR_MODE_HOST);  // or FPR_MODE_CLIENT
-    fpr_network_start();
+    fpr_set_mode(FPR_MODE_HOST);  // or FPR_MODE_CLIENT
+    fpr_start();
     
     // Send data to peers
     char message[] = "Hello from FPR!";
-    fpr_network_broadcast(message, strlen(message), 1);
+    fpr_broadcast(message, strlen(message), 1);
 }
 ```
 

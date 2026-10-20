@@ -31,7 +31,7 @@ static const char *TAG = "fpr_client";
  * Call under _peers_lock(net) — the send path re-takes it recursively. */
 static void _client_send_request(fpr_node_t *net, const uint8_t *mac, const char *what)
 {
-    esp_err_t err = fpr_node_send_device_info(net, mac);
+    esp_err_t err = fpr_send_device_info(net, mac);
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Sent %s to host " MACSTR, what, MAC2STR(mac));
     } else {
@@ -49,7 +49,7 @@ static void _peer_connected_cb(void *key, void *value, void *user_data)
     }
 }
 
-bool fpr_node_client_is_connected(fpr_node_t *net)
+bool fpr_client_connected(fpr_node_t *net)
 {
     _peers_lock(net);
     bool connected = false;
@@ -71,7 +71,7 @@ static void _client_discover_host(fpr_node_t *net, const fpr_rx_frame_t *frame, 
     // Check if we're already connected to a DIFFERENT host
     // Allow reconnection to the SAME host (e.g., after restart)
     FPR_STORE_HASH_TYPE *existing = _peer_from_map(net, frame->src_mac);
-    if (!existing && fpr_node_client_is_connected(net)) {
+    if (!existing && fpr_client_connected(net)) {
         #if (FPR_DEBUG == 1)
         ESP_LOGW(TAG, "Already connected to a different host - ignoring %s", info->name);
         #endif
@@ -302,7 +302,7 @@ static void _host_find_cb(void *key, void *value, void *user_data)
     }
 }
 
-esp_err_t fpr_node_client_get_host_info(fpr_node_t *net, uint8_t *mac_out, char *name_out, size_t name_size)
+esp_err_t fpr_client_host_info(fpr_node_t *net, uint8_t *mac_out, char *name_out, size_t name_size)
 {
     ESP_RETURN_ON_FALSE(mac_out != NULL, ESP_ERR_INVALID_ARG, TAG, "MAC output buffer is NULL");
 
@@ -331,7 +331,7 @@ esp_err_t fpr_node_client_get_host_info(fpr_node_t *net, uint8_t *mac_out, char 
     return ESP_OK;
 }
 
-esp_err_t fpr_node_client_set_config(fpr_node_t *net, const fpr_client_config_t *config)
+esp_err_t fpr_client_set_config(fpr_node_t *net, const fpr_client_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
 
@@ -345,7 +345,7 @@ esp_err_t fpr_node_client_set_config(fpr_node_t *net, const fpr_client_config_t 
     return ESP_OK;
 }
 
-esp_err_t fpr_node_client_get_config(fpr_node_t *net, fpr_client_config_t *config)
+esp_err_t fpr_client_get_config(fpr_node_t *net, fpr_client_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
 
@@ -357,7 +357,7 @@ esp_err_t fpr_node_client_get_config(fpr_node_t *net, fpr_client_config_t *confi
     return ESP_OK;
 }
 
-size_t fpr_node_client_list_discovered_hosts(fpr_node_t *net, fpr_peer_info_t *peer_array, size_t max_peers)
+size_t fpr_client_hosts(fpr_node_t *net, fpr_peer_info_t *peer_array, size_t max_peers)
 {
     if (!peer_array || max_peers == 0) {
         return 0;
@@ -376,7 +376,7 @@ size_t fpr_node_client_list_discovered_hosts(fpr_node_t *net, fpr_peer_info_t *p
     return ctx.count;
 }
 
-esp_err_t fpr_node_client_connect_to_host(fpr_node_t *net, const uint8_t *peer_mac, uint32_t timeout_ms)
+esp_err_t fpr_client_connect(fpr_node_t *net, const uint8_t *peer_mac, uint32_t timeout_ms)
 {
     const TickType_t timeout = pdMS_TO_TICKS(timeout_ms);
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
@@ -401,7 +401,7 @@ esp_err_t fpr_node_client_connect_to_host(fpr_node_t *net, const uint8_t *peer_m
     const TickType_t retry_interval = pdMS_TO_TICKS(FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS);
 
     while (xTaskGetTickCount() - start < timeout) {
-        esp_err_t err = fpr_node_send_device_info(net, peer_mac);
+        esp_err_t err = fpr_send_device_info(net, peer_mac);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send connection request: %s", esp_err_to_name(err));
         }
@@ -424,11 +424,11 @@ esp_err_t fpr_node_client_connect_to_host(fpr_node_t *net, const uint8_t *peer_m
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t fpr_node_client_disconnect(fpr_node_t *net)
+esp_err_t fpr_client_disconnect(fpr_node_t *net)
 {
     // Find and disconnect from connected host
     uint8_t host_mac[6];
-    esp_err_t err = fpr_node_client_get_host_info(net, host_mac, NULL, 0);
+    esp_err_t err = fpr_client_host_info(net, host_mac, NULL, 0);
     if (err == ESP_OK) {
         FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(net, host_mac);
         if (peer) {
@@ -443,7 +443,7 @@ esp_err_t fpr_node_client_disconnect(fpr_node_t *net)
     return ESP_ERR_NOT_FOUND;
 }
 
-size_t fpr_node_client_scan_for_hosts(fpr_node_t *net, uint32_t duration_ms)
+size_t fpr_client_scan(fpr_node_t *net, uint32_t duration_ms)
 {
     const TickType_t duration = pdMS_TO_TICKS(duration_ms);
     ESP_LOGI(TAG, "Scanning for hosts for %lu ms", (unsigned long)duration_ms);
@@ -458,7 +458,7 @@ size_t fpr_node_client_scan_for_hosts(fpr_node_t *net, uint32_t duration_ms)
     while (xTaskGetTickCount() - start < duration) {
         TickType_t now = xTaskGetTickCount();
         if (now - last_broadcast >= broadcast_interval) {
-            fpr_node_broadcast_device_info(net);
+            fpr_broadcast_device_info(net);
             last_broadcast = now;
         }
         vTaskDelay(pdMS_TO_TICKS(FPR_HOST_SCAN_POLL_INTERVAL_MS));
@@ -481,13 +481,13 @@ void _client_reconnect_step(fpr_node_t *net, uint32_t now_ms)
         const uint32_t keep_interval_ms = _power_interval(net, FPR_KEEPALIVE_INTERVAL_MS);
         // If connected, send periodic keepalive and check for host timeout
         uint8_t host_mac[MAC_ADDRESS_LENGTH];
-        if (fpr_node_client_get_host_info(net, host_mac, NULL, 0) == ESP_OK) {
+        if (fpr_client_host_info(net, host_mac, NULL, 0) == ESP_OK) {
             _peers_lock(net);
             FPR_STORE_HASH_TYPE *host_peer = _peer_from_map(net, host_mac);
             if (host_peer && host_peer->is_connected) {
                 // keepalive send periodically
                 if ((int32_t)(now_ms - net->recon_keep_ms) >= (int32_t)keep_interval_ms) {
-                    esp_err_t err = fpr_node_send_device_info(net, host_mac);
+                    esp_err_t err = fpr_send_device_info(net, host_mac);
                     if (err != ESP_OK) {
                         ESP_LOGD(TAG, "Keepalive to host failed: %s", esp_err_to_name(err));
                     }

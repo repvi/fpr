@@ -29,7 +29,7 @@ static void _peer_connected_count_cb(void *key, void *value, void *user_data)
     }
 }
 
-size_t fpr_node_host_connected_count(fpr_node_t *net)
+size_t fpr_host_peer_count(fpr_node_t *net)
 {
     _peers_lock(net);
     size_t count = 0;
@@ -56,7 +56,7 @@ static bool _host_allow_connect(fpr_node_t *net, const fpr_rx_frame_t *frame, co
     
     // Check max peers limit
     if (net->host_config.max_peers > 0) {
-        size_t connected_count = fpr_node_host_connected_count(net);
+        size_t connected_count = fpr_host_peer_count(net);
         if (connected_count >= net->host_config.max_peers && (!existing || existing->state != FPR_PEER_STATE_CONNECTED)) {
             ESP_LOGW(TAG, "Max peers limit reached (%zu/%d) - rejecting %s", 
                      connected_count, net->host_config.max_peers, info->name);
@@ -137,7 +137,7 @@ static void _host_rx_auto(fpr_node_t *net, const fpr_rx_frame_t *frame, const fp
     }
 }
 
-esp_err_t fpr_node_host_approve_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_host_approve(fpr_node_t *net, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -156,7 +156,7 @@ esp_err_t fpr_node_host_approve_peer(fpr_node_t *net, const uint8_t *peer_mac)
 
     // Check max peers limit
     if (net->host_config.max_peers > 0) {
-        size_t connected_count = fpr_node_host_connected_count(net);
+        size_t connected_count = fpr_host_peer_count(net);
         if (connected_count >= net->host_config.max_peers && peer->state != FPR_PEER_STATE_CONNECTED) {
             _peers_unlock(net);
             ESP_LOGW(TAG, "Max peers limit reached - cannot approve");
@@ -181,7 +181,7 @@ esp_err_t fpr_node_host_approve_peer(fpr_node_t *net, const uint8_t *peer_mac)
         // No security - mark as connected immediately (legacy mode)
         peer->is_connected = true;
         peer->state = FPR_PEER_STATE_CONNECTED;
-        err = fpr_node_send_device_info(net, peer_mac);
+        err = fpr_send_device_info(net, peer_mac);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to send approval to peer: %s", esp_err_to_name(err));
         }
@@ -191,7 +191,7 @@ esp_err_t fpr_node_host_approve_peer(fpr_node_t *net, const uint8_t *peer_mac)
     return err;
 }
 
-esp_err_t fpr_node_host_reject_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_host_reject(fpr_node_t *net, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -252,9 +252,9 @@ static void _host_rx_manual(fpr_node_t *net, const fpr_rx_frame_t *frame, const 
     if (_cb_has_conn_request(net)) {
         bool approved = _cb_conn_request(net, frame->src_mac, info->name, 0);
         if (approved) {
-            fpr_node_host_approve_peer(net, frame->src_mac);
+            fpr_host_approve(net, frame->src_mac);
         } else {
-            fpr_node_host_reject_peer(net, frame->src_mac);
+            fpr_host_reject(net, frame->src_mac);
         }
     }
 }
@@ -333,7 +333,7 @@ void _rx_host(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data,
     _peers_unlock(net);
 }
 
-esp_err_t fpr_node_host_block_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_host_block(fpr_node_t *net, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -361,7 +361,7 @@ esp_err_t fpr_node_host_block_peer(fpr_node_t *net, const uint8_t *peer_mac)
     return ESP_OK;
 }
 
-esp_err_t fpr_node_host_unblock_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_host_unblock(fpr_node_t *net, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -383,7 +383,7 @@ esp_err_t fpr_node_host_unblock_peer(fpr_node_t *net, const uint8_t *peer_mac)
     return ESP_ERR_INVALID_STATE;
 }
 
-esp_err_t fpr_node_host_disconnect_peer(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t fpr_host_disconnect(fpr_node_t *net, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
@@ -418,7 +418,7 @@ static void _host_keepalive_cb(void *key, void *value, void *user_data)
         }
 
         // Send keepalive (device info) to client to prompt a response
-        esp_err_t err = fpr_node_send_device_info(net, peer->mac);
+        esp_err_t err = fpr_send_device_info(net, peer->mac);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Host keepalive send to " MACSTR " failed: %s", MAC2STR(peer->mac), esp_err_to_name(err));
         }
@@ -440,7 +440,7 @@ void _host_reconnect_step(fpr_node_t *net, uint32_t now_ms)
 
 
 
-esp_err_t fpr_node_host_set_config(fpr_node_t *net, const fpr_host_config_t *config)
+esp_err_t fpr_host_set_config(fpr_node_t *net, const fpr_host_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
 
@@ -455,7 +455,7 @@ esp_err_t fpr_node_host_set_config(fpr_node_t *net, const fpr_host_config_t *con
     return ESP_OK;
 }
 
-esp_err_t fpr_node_host_get_config(fpr_node_t *net, fpr_host_config_t *config)
+esp_err_t fpr_host_get_config(fpr_node_t *net, fpr_host_config_t *config)
 {
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
 

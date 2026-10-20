@@ -35,9 +35,9 @@
 //   Packets hop through Extender 1 and 2 with increasing hop_count.
 //
 // USAGE:
-//   fpr_network_init("Extender1");
-//   fpr_node_start();
-//   fpr_node_set_mode(FPR_MODE_EXTENDER);  // Enable routing/forwarding
+//   fpr_init_at(&node, "Extender1", &cfg);
+//   fpr_set_mode(&node, FPR_MODE_EXTENDER);  // Enable routing/forwarding
+//   fpr_start(&node);
 //
 
 static const char *TAG = "fpr_extender";

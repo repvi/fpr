@@ -103,7 +103,7 @@ idf.py build flash monitor
 **Connection issues:**
 - Ensure both devices are in range
 - Check WiFi is initialized (should see in logs)
-- Verify both devices called `fpr_network_start()`
+- Verify both devices called `fpr_start()`
 
 ## File Structure
 

@@ -61,3 +61,9 @@ idf_component_register(
         driver
         common-utils
 )
+
+# Opt into the parent's -Werror convention when built inside Raminox;
+# absent there, this is a no-op so upstream/standalone use is unaffected.
+if(COMMAND raminox_strict_warnings)
+    raminox_strict_warnings()
+endif()

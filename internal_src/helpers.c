@@ -19,7 +19,7 @@ static const char *TAG = "fpr_helpers";
 /* Returns true when the packet should be enqueued/callbacked, false when
  * the queue-mode policy dropped it. Callers must honor the return: the
  * drops counted here previously still reached the queue. */
-static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, uint8_t *peer_address) 
+static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, const uint8_t *peer_address)
 {
     // Determine packet type characteristics
     bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);

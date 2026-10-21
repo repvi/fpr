@@ -58,7 +58,6 @@ idf_component_register(
         nvs_flash
         freertos
         esp_timer
-        driver
         common-utils
 )
 

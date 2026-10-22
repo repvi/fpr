@@ -526,6 +526,9 @@ static void _fpr_reconnect_task_entry(void *arg)
     while (!net->reconnect_stop_requested && net->reconnect_armed) {
         uint32_t now_ms = (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
         _poll_reconnect(net, now_ms);
+        /* vTaskDelayUntil stays here on purpose: this task paces a fixed
+         * interval (not a poll-returned deadline relative to now), which
+         * is exactly the periodic-wakeup primitive's contract. */
         vTaskDelayUntil(&last_wake,
                         pdMS_TO_TICKS(_step_interval_ms(net)));
     }

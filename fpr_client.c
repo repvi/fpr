@@ -401,7 +401,9 @@ esp_err_t fpr_client_connect(fpr_node_t *net, const uint8_t *peer_mac, uint32_t 
     const TickType_t retry_interval = pdMS_TO_TICKS(FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS);
 
     /* Always attempt at least once: timeout_ms == 0 must not return
-     * ESP_ERR_TIMEOUT having never sent the request. */
+     * ESP_ERR_TIMEOUT having never sent the request. The inter-attempt
+     * delay is clamped to the remaining budget so a small timeout never
+     * sleeps a whole retry interval before noticing the deadline. */
     for (;;) {
         esp_err_t err = fpr_send_device_info(net, peer_mac);
         if (err != ESP_OK) {
@@ -419,10 +421,12 @@ esp_err_t fpr_client_connect(fpr_node_t *net, const uint8_t *peer_mac, uint32_t 
             return ESP_OK;
         }
 
-        if (xTaskGetTickCount() - start >= timeout) {
+        const TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= timeout) {
             break;
         }
-        vTaskDelay(retry_interval);
+        const TickType_t remaining = timeout - elapsed;
+        vTaskDelay(remaining < retry_interval ? remaining : retry_interval);
     }
 
     ESP_LOGW(TAG, "Connection timeout");

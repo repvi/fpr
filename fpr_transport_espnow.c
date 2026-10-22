@@ -33,7 +33,6 @@ static struct {
     fpr_transport_rx_fn rx;
     fpr_transport_tx_done_fn tx_done;
     void *sink;
-    bool open;
 } s_radio;
 
 static void _espnow_rx(const esp_now_recv_info_t *info,
@@ -76,7 +75,6 @@ static esp_err_t _open(void *ctx, fpr_transport_rx_fn rx,
     s_radio.rx = rx;
     s_radio.tx_done = tx_done;
     s_radio.sink = sink;
-    s_radio.open = true;
     err = esp_now_register_recv_cb(_espnow_rx);
     if (err == ESP_OK) {
         err = esp_now_register_send_cb(_espnow_tx_done);
@@ -85,7 +83,6 @@ static esp_err_t _open(void *ctx, fpr_transport_rx_fn rx,
         s_radio.rx = NULL;
         s_radio.tx_done = NULL;
         s_radio.sink = NULL;
-        s_radio.open = false;
         esp_now_unregister_recv_cb();
         esp_now_deinit();
         return err;
@@ -105,7 +102,6 @@ static esp_err_t _close(void *ctx)
     s_radio.rx = NULL;
     s_radio.tx_done = NULL;
     s_radio.sink = NULL;
-    s_radio.open = false;
     return err;
 }
 

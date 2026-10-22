@@ -61,8 +61,13 @@ static void _tx_done_sink(void *sink, const uint8_t *mac, bool ok);
  * so the window must cover one worst-case iteration plus lock hold. */
 static inline TickType_t _task_stop_grace(fpr_node_t *net)
 {
-    uint32_t grace_ms =
-        2 * _power_interval(net, FPR_HOST_SCAN_POLL_INTERVAL_MS) + 250;
+    uint32_t interval =
+        _power_interval(net, FPR_HOST_SCAN_POLL_INTERVAL_MS);
+    /* Saturate: the power-mode multiplier can clamp the interval to
+     * UINT32_MAX, and 2*interval+250 must not wrap into a hair-trigger
+     * vTaskDelete fallback. */
+    uint32_t grace_ms = interval > (UINT32_MAX - 250) / 2
+                            ? UINT32_MAX : 2 * interval + 250;
     return pdMS_TO_TICKS(grace_ms);
 }
 
@@ -146,20 +151,7 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
     net->channel = config->channel;
     net->power_mode = config->power_mode;
     net->default_queue_mode = config->queue_mode;
-    
-    // Set the channel if specified (must be done before the transport opens)
-    if (config->channel >= 1 && config->channel <= 14) {
-        esp_err_t err = t->set_channel(t->ctx, config->channel);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "Failed to set WiFi channel %d: %s", config->channel, esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG, "WiFi channel set to %d", config->channel);
-        }
-    }
 
-    // Register the broadcast peer
-    _broadcast_peer_add(net, "default");
-    
     net->access_state = FPR_VISIBILITY_PUBLIC;
     
     // Initialize default host config
@@ -211,7 +203,25 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
         ESP_LOGE(TAG, "Failed to open transport: %s", esp_err_to_name(radio_err));
         return radio_err;
     }
-    
+
+    /* Channel select and the broadcast peer need a live radio: the
+     * transport contract is that every vtable op fails while closed,
+     * so both run only after open() succeeds. The broadcast peer is
+     * also re-added by fpr_set_mode for client/host/extender — the
+     * init-time add covers modes that never take a branch there
+     * (BROADCAST/DEFAULT). */
+    if (config->channel >= 1 && config->channel <= 14) {
+        esp_err_t err = t->set_channel(t->ctx, config->channel);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to set WiFi channel %d: %s", config->channel, esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "WiFi channel set to %d", config->channel);
+        }
+    }
+    if (_broadcast_peer_add(net, "default") != ESP_OK) {
+        ESP_LOGW(TAG, "Broadcast peer add failed at init");
+    }
+
     net->state = FPR_STATE_INITIALIZED;
     net->paused = false;
     
@@ -223,19 +233,16 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
     return ESP_OK;
 }
 
-/* Deinit peer sweep: detach each store from the transport peer table
- * and free it (or mark dead for a live reader to release). Only used
+/* Deinit peer sweep: free each store (or mark dead for a live reader
+ * to release). Runs after transport close() — the peer table went down
+ * with the radio, so there is nothing to del_peer against. Only used
  * by fpr_deinit — kept file-local. */
 static void _peer_cleanup_cb(void *key, void *value, void *user_data)
 {
     (void)key;
-    fpr_node_t *net = (fpr_node_t *)user_data;
+    (void)user_data;
     FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
     if (peer) {
-        const fpr_transport_t *t = _transport(net);
-        if (t) {
-            t->del_peer(t->ctx, peer->mac);
-        }
         _peer_store_free_or_defer(peer);
     }
 }
@@ -339,6 +346,12 @@ void fpr_destroy(fpr_node_t *net)
     if (net->state != FPR_STATE_UNINITIALIZED) {
         fpr_deinit(net);
     }
+    if (!net->owns_storage) {
+        /* Caller-provided storage (fpr_init_at): the node is left
+         * deinitialized and peers_lock stays alive — freeing either is
+         * the storage owner's call. */
+        return;
+    }
     if (net->peers_lock != NULL) {
         vSemaphoreDelete(net->peers_lock);
     }
@@ -420,6 +433,10 @@ esp_err_t fpr_stop(fpr_node_t *net)
     _peers_lock(net);
     net->state = FPR_STATE_STOPPED;
     net->paused = false;
+    /* Stop means no periodic work: a stopped node must not keep
+     * broadcasting or reconnecting via fpr_poll / the node tasks. */
+    net->loop_armed = false;
+    net->reconnect_armed = false;
     _peers_unlock(net);
     ESP_LOGI(TAG, "Network stopped");
     return ESP_OK;
@@ -457,18 +474,12 @@ static void _loop_step(fpr_node_t *net)
     }
 }
 
-static uint32_t _loop_interval_ms(fpr_node_t *net)
+/* Shared pacing for both periodic halves — power-mode stretched. */
+static uint32_t _step_interval_ms(fpr_node_t *net)
 {
     return _power_interval(net, net->current_mode == FPR_MODE_HOST
                                   ? FPR_HOST_SCAN_POLL_INTERVAL_MS
                                   : FPR_CLIENT_WAIT_CHECK_INTERVAL_MS);
-}
-
-static uint32_t _reconnect_interval_ms(fpr_node_t *net)
-{
-    return _power_interval(net, net->current_mode == FPR_MODE_HOST
-                                    ? FPR_HOST_SCAN_POLL_INTERVAL_MS
-                                    : FPR_CLIENT_WAIT_CHECK_INTERVAL_MS);
 }
 
 static void _reconnect_step(fpr_node_t *net, uint32_t now_ms)
@@ -490,15 +501,16 @@ static void _fpr_loop_task_entry(void *arg)
     fpr_node_t *net = (fpr_node_t *)arg;
     ESP_LOGI(TAG, "%s loop task started",
              net->current_mode == FPR_MODE_HOST ? "Host" : "Client");
-    TickType_t last_wake = xTaskGetTickCount();
 
     while (!net->loop_stop_requested && net->loop_armed) {
         uint32_t now_ms = (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
         uint32_t wait_ms = _poll_loop(net, now_ms);
         if (wait_ms == 0 || wait_ms == UINT32_MAX) {
-            wait_ms = _loop_interval_ms(net);
+            wait_ms = _step_interval_ms(net);
         }
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(wait_ms));
+        /* wait_ms is relative to now, not last_wake — vTaskDelayUntil
+         * would wake early by (now - last_wake) and spin re-polls. */
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
     }
 
     _task_exit(net, &net->loop_task);
@@ -515,7 +527,7 @@ static void _fpr_reconnect_task_entry(void *arg)
         uint32_t now_ms = (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
         _poll_reconnect(net, now_ms);
         vTaskDelayUntil(&last_wake,
-                        pdMS_TO_TICKS(_reconnect_interval_ms(net)));
+                        pdMS_TO_TICKS(_step_interval_ms(net)));
     }
 
     _task_exit(net, &net->reconnect_task);
@@ -634,9 +646,14 @@ static uint32_t _poll_loop(fpr_node_t *net, uint32_t now_ms)
         }
         if (net->loop_deadline_ms && (int32_t)(now_ms - net->loop_deadline_ms) >= 0) {
             net->loop_armed = false;
-        } else if ((int32_t)(now_ms - net->loop_next_due_ms) >= 0) {
+        /* next_due == 0 is the "armed, due at next poll" sentinel from
+         * fpr_start_loop — comparing it as a timestamp would read as
+         * far-future once now_ms passes 2^31. A computed due can only
+         * hit 0 once per epoch wrap, costing at most one early step. */
+        } else if (net->loop_next_due_ms == 0 ||
+                   (int32_t)(now_ms - net->loop_next_due_ms) >= 0) {
             _loop_step(net);
-            net->loop_next_due_ms = now_ms + _loop_interval_ms(net);
+            net->loop_next_due_ms = now_ms + _step_interval_ms(net);
         }
         if (net->loop_armed) {
             uint32_t due = net->loop_next_due_ms - now_ms;
@@ -660,9 +677,11 @@ static uint32_t _poll_reconnect(fpr_node_t *net, uint32_t now_ms)
     uint32_t next = UINT32_MAX;
 
     if (net->reconnect_armed) {
-        if ((int32_t)(now_ms - net->reconnect_next_due_ms) >= 0) {
+        /* Same 0 sentinel as the loop half (see _poll_loop). */
+        if (net->reconnect_next_due_ms == 0 ||
+            (int32_t)(now_ms - net->reconnect_next_due_ms) >= 0) {
             _reconnect_step(net, now_ms);
-            net->reconnect_next_due_ms = now_ms + _reconnect_interval_ms(net);
+            net->reconnect_next_due_ms = now_ms + _step_interval_ms(net);
         }
         uint32_t due = net->reconnect_next_due_ms - now_ms;
         if (due < next) {

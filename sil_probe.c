@@ -7,6 +7,7 @@
 
 #include "fpr/fpr_sil.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -84,6 +85,23 @@ size_t fpr_sil_build_data(void *buf, size_t cap,
     return fpr_codec_encode(pkg, buf, cap) != 0 ? sizeof(*pkg) : 0;
 }
 
+/* Append one field; false when it did not fit — snprintf returns the
+ * would-be length on truncation, so advancing p by it would point past
+ * the buffer and underflow `left` on the next call. */
+static bool _appendf(char **p, size_t *left, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int w = vsnprintf(*p, *left, fmt, ap);
+    va_end(ap);
+    if (w < 0 || (size_t)w >= *left) {
+        return false;
+    }
+    *p += (size_t)w;
+    *left -= (size_t)w;
+    return true;
+}
+
 bool fpr_sil_describe(const void *buf, size_t len, char *out, size_t out_len)
 {
     if (buf == NULL || out == NULL || len < sizeof(fpr_package_t) ||
@@ -115,28 +133,33 @@ bool fpr_sil_describe(const void *buf, size_t len, char *out, size_t out_len)
         const fpr_connect_t *ci = &pkg->protocol.connect_info;
         size_t left = out_len - (size_t)n;
         char *p = out + n;
-        int w = snprintf(p, left, " name=%s", ci->name);
-        p += w; left -= (size_t)w;
-        w = snprintf(p, left, " pwk=");
-        p += w; left -= (size_t)w;
-        if (ci->has_pwk) {
-            for (int i = 0; i < FPR_KEY_SIZE && left > 3; i++) {
-                w = snprintf(p, left, "%02x", ci->pwk[i]);
-                p += w; left -= (size_t)w;
-            }
-        } else {
-            w = snprintf(p, left, "-");
-            p += w; left -= (size_t)w;
+        /* %.*s: the wire name may fill its field with no NUL. A
+         * truncated dump still describes the packet — bail early. */
+        if (!_appendf(&p, &left, " name=%.*s",
+                      (int)sizeof(ci->name), ci->name) ||
+            !_appendf(&p, &left, " pwk=")) {
+            return true;
         }
-        w = snprintf(p, left, " lwk=");
-        p += w; left -= (size_t)w;
+        if (ci->has_pwk) {
+            for (int i = 0; i < FPR_KEY_SIZE; i++) {
+                if (!_appendf(&p, &left, "%02x", ci->pwk[i])) {
+                    return true;
+                }
+            }
+        } else if (!_appendf(&p, &left, "-")) {
+            return true;
+        }
+        if (!_appendf(&p, &left, " lwk=")) {
+            return true;
+        }
         if (ci->has_lwk) {
-            for (int i = 0; i < FPR_KEY_SIZE && left > 3; i++) {
-                w = snprintf(p, left, "%02x", ci->lwk[i]);
-                p += w; left -= (size_t)w;
+            for (int i = 0; i < FPR_KEY_SIZE; i++) {
+                if (!_appendf(&p, &left, "%02x", ci->lwk[i])) {
+                    return true;
+                }
             }
         } else {
-            snprintf(p, left, "-");
+            _appendf(&p, &left, "-");
         }
     }
     return true;

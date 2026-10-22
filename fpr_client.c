@@ -400,7 +400,9 @@ esp_err_t fpr_client_connect(fpr_node_t *net, const uint8_t *peer_mac, uint32_t 
     TickType_t start = xTaskGetTickCount();
     const TickType_t retry_interval = pdMS_TO_TICKS(FPR_MANUAL_CONNECT_RETRY_INTERVAL_MS);
 
-    while (xTaskGetTickCount() - start < timeout) {
+    /* Always attempt at least once: timeout_ms == 0 must not return
+     * ESP_ERR_TIMEOUT having never sent the request. */
+    for (;;) {
         esp_err_t err = fpr_send_device_info(net, peer_mac);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to send connection request: %s", esp_err_to_name(err));
@@ -417,9 +419,12 @@ esp_err_t fpr_client_connect(fpr_node_t *net, const uint8_t *peer_mac, uint32_t 
             return ESP_OK;
         }
 
+        if (xTaskGetTickCount() - start >= timeout) {
+            break;
+        }
         vTaskDelay(retry_interval);
     }
-    
+
     ESP_LOGW(TAG, "Connection timeout");
     return ESP_ERR_TIMEOUT;
 }

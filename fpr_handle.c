@@ -10,7 +10,6 @@
  */
 
 #include "fpr/internal/fpr_handle.h"
-#include "fpr/internal/fpr_legacy.h"
 #include "fpr/internal/fpr_new.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -49,13 +48,6 @@ bool fpr_version_handle_version(const fpr_rx_frame_t *frame, const uint8_t *data
     
     // Version mismatch detected - log it
     _log_version_info(version, frame->src_mac);
-    
-    // Try legacy handler for older versions
-    if (fpr_version_needs_legacy_handler(version)) {
-        if (fpr_legacy_handle_protocol_version(version, frame, data, len)) {
-            return true;
-        }
-    }
     
     // Try new handler for future versions
     if (fpr_version_needs_newer_handler(version)) {

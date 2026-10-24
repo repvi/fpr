@@ -53,16 +53,21 @@
 
 static const char *TAG = "fpr";
 
+/* Public-API node guard: a NULL node must never reach _peers_lock or a
+ * field dereference. ESP_RETURN_ON_FALSE logs + returns INVALID_ARG. */
+#define FPR_REQUIRE_NODE(n) \
+    ESP_RETURN_ON_FALSE((n) != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL")
+
 static void _rx_dispatch(void *sink, const fpr_rx_frame_t *frame);
 static void _tx_done_sink(void *sink, const uint8_t *mac, bool ok);
 
 /* Cooperative-stop grace for the loop/reconnect tasks: they poll their
  * stop flag once per configured poll interval (power-mode stretched),
  * so the window must cover one worst-case iteration plus lock hold. */
-static inline TickType_t _task_stop_grace(fpr_node_t *net)
+static inline TickType_t _task_stop_grace(fpr_node_t *node)
 {
     uint32_t interval =
-        _power_interval(net, FPR_HOST_SCAN_POLL_INTERVAL_MS);
+        _power_interval(node, FPR_HOST_SCAN_POLL_INTERVAL_MS);
     /* Saturate: the power-mode multiplier can clamp the interval to
      * UINT32_MAX, and 2*interval+250 must not wrap into a hair-trigger
      * vTaskDelete fallback. */
@@ -75,14 +80,14 @@ static inline TickType_t _task_stop_grace(fpr_node_t *net)
  * slot. vTaskDelete remains the fallback for a wedged task — but only
  * after a full grace window, because a task killed while holding
  * peers_lock strands the recursive mutex for every later caller. */
-static void _fpr_task_stop(fpr_node_t *net, TaskHandle_t *handle, volatile bool *stop_flag)
+static void _fpr_task_stop(fpr_node_t *node, TaskHandle_t *handle, volatile bool *stop_flag)
 {
     if (handle == NULL || *handle == NULL) {
         return;
     }
     TaskHandle_t target = *handle;
     *stop_flag = true;
-    TickType_t deadline = xTaskGetTickCount() + _task_stop_grace(net);
+    TickType_t deadline = xTaskGetTickCount() + _task_stop_grace(node);
     while (*handle == target &&
            (int32_t)(xTaskGetTickCount() - deadline) < 0) {
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -98,22 +103,22 @@ static void _fpr_task_stop(fpr_node_t *net, TaskHandle_t *handle, volatile bool 
 /* Exit path for an fpr-owned task: clear the handle slot only if it
  * still names this task — a restarted instance may already have
  * replaced it — then self-delete. */
-static void _task_exit(fpr_node_t *net, TaskHandle_t *slot)
+static void _task_exit(fpr_node_t *node, TaskHandle_t *slot)
 {
-    _peers_lock(net);
+    _peers_lock(node);
     if (*slot == xTaskGetCurrentTaskHandle()) {
         *slot = NULL;
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
     vTaskDelete(NULL);
 }
 
 // Helper: Add broadcast peer to the transport's peer table
 // this needs to be called whenever we change mode (host/client/extender)
-static esp_err_t _broadcast_peer_add(fpr_node_t *net, const char *mode_name)
+static esp_err_t _broadcast_peer_add(fpr_node_t *node, const char *mode_name)
 {
     static const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    const fpr_transport_t *t = _transport(net);
+    const fpr_transport_t *t = _transport(node);
     if (t == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -129,45 +134,54 @@ static esp_err_t _broadcast_peer_add(fpr_node_t *net, const char *mode_name)
  * (heap node) and by fixtures with static storage. Callbacks are not
  * set here: create() copies cfg->callbacks, bare init leaves them
  * zero (fpr_set_callbacks installs them later). */
-esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t *config)
+esp_err_t fpr_init_at(fpr_node_t *node, const char *name, const fpr_init_config_t *config)
 {
-    ESP_RETURN_ON_FALSE(net != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL");
+    ESP_RETURN_ON_FALSE(node != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL");
     ESP_RETURN_ON_FALSE(name != NULL, ESP_ERR_INVALID_ARG, TAG, "Name is NULL");
     ESP_RETURN_ON_FALSE(config != NULL, ESP_ERR_INVALID_ARG, TAG, "Config is NULL");
-    ESP_RETURN_ON_FALSE(strlen(name) < sizeof(net->name), ESP_ERR_INVALID_ARG, TAG, "Name too long");
-    ESP_RETURN_ON_FALSE(net->state == FPR_STATE_UNINITIALIZED, ESP_ERR_INVALID_STATE, TAG, "Network already initialized");
+    ESP_RETURN_ON_FALSE(strlen(name) < sizeof(node->name), ESP_ERR_INVALID_ARG, TAG, "Name too long");
+    ESP_RETURN_ON_FALSE(node->state == FPR_STATE_UNINITIALIZED, ESP_ERR_INVALID_STATE, TAG, "Network already initialized");
 
-    net->transport = config->transport ? config->transport
+    node->transport = config->transport ? config->transport
                                           : fpr_transport_espnow();
-    const fpr_transport_t *t = net->transport;
+    const fpr_transport_t *t = node->transport;
+    /* Required vtable members — a NULL fn pointer here is a delayed
+     * crash, so reject the transport up front. set_channel is the one
+     * optional op (skipped when absent or channel unset). */
+    ESP_RETURN_ON_FALSE(t->open && t->close && t->send && t->get_mac &&
+                        t->ready && t->add_peer && t->del_peer,
+                        ESP_ERR_INVALID_ARG, TAG,
+                        "Transport vtable missing required ops");
+    ESP_RETURN_ON_FALSE(config->channel <= 14, ESP_ERR_INVALID_ARG,
+                        TAG, "Invalid WiFi channel %d", config->channel);
     ESP_RETURN_ON_FALSE(t->mtu > sizeof(fpr_package_t), ESP_ERR_INVALID_SIZE,
                         TAG, "Transport MTU %u too small for fpr_package_t (%u)",
                         (unsigned)t->mtu, (unsigned)sizeof(fpr_package_t));
-    ESP_RETURN_ON_ERROR(t->get_mac(t->ctx, net->mac), TAG, "Failed to read MAC address");
+    ESP_RETURN_ON_ERROR(t->get_mac(t->ctx, node->mac), TAG, "Failed to read MAC address");
     
-    strncpy(net->name, name, sizeof(net->name) - 1);
-    net->name[sizeof(net->name) - 1] = '\0';
+    strncpy(node->name, name, sizeof(node->name) - 1);
+    node->name[sizeof(node->name) - 1] = '\0';
     // Store channel and power mode config
-    net->channel = config->channel;
-    net->power_mode = config->power_mode;
-    net->default_queue_mode = config->queue_mode;
+    node->channel = config->channel;
+    node->power_mode = config->power_mode;
+    node->default_queue_mode = config->queue_mode;
 
-    net->access_state = FPR_VISIBILITY_PUBLIC;
+    node->access_state = FPR_VISIBILITY_PUBLIC;
     
     // Initialize default host config
-    net->host_config.max_peers = 32;  // 32 by default
-    net->host_config.connection_mode = FPR_CONNECTION_AUTO;
-    net->host_config.request_cb = NULL;
+    node->host_config.max_peers = 32;  // 32 by default
+    node->host_config.connection_mode = FPR_CONNECTION_AUTO;
+    node->host_config.request_cb = NULL;
     
     // Initialize default client config
-    net->client_config.connection_mode = FPR_CONNECTION_AUTO;
-    net->client_config.discovery_cb = NULL;
+    node->client_config.connection_mode = FPR_CONNECTION_AUTO;
+    node->client_config.discovery_cb = NULL;
 
     // Initialize security
-    net->host_pwk_valid = false;
+    node->host_pwk_valid = false;
     
     // Initialize sequence number counter
-    net->tx_sequence_num = 0;
+    node->tx_sequence_num = 0;
 
     /* peers_lock is process-lifetime: created lazily here and never
      * deleted. A callback or reader may legitimately reach for it after
@@ -175,31 +189,31 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
      * get_data_from_peer waking late) — deleting the semaphore under a
      * waiter is UB, and the guarded objects are left in hashmap's
      * safe-empty state anyway. */
-    if (net->peers_lock == NULL) {
-        net->peers_lock = xSemaphoreCreateRecursiveMutex();
-        if (net->peers_lock == NULL) {
+    if (node->peers_lock == NULL) {
+        node->peers_lock = xSemaphoreCreateRecursiveMutex();
+        if (node->peers_lock == NULL) {
             ESP_LOGE(TAG, "Failed to allocate peers lock");
             return ESP_ERR_NO_MEM;
         }
     }
-    if (!hashmap_init(&net->peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
+    if (!hashmap_init(&node->peers_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
         ESP_LOGE(TAG, "Failed to allocate peers map");
         return ESP_ERR_NO_MEM;
     }
-    if (!hashmap_init(&net->routes_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
+    if (!hashmap_init(&node->routes_map, FPR_HASHMAP_INITIAL_SIZE, mac_hash, mac_equals)) {
         ESP_LOGE(TAG, "Failed to allocate routes map");
-        hashmap_free(&net->peers_map);
+        hashmap_free(&node->peers_map);
         return ESP_ERR_NO_MEM;
     }
     /* Bring the radio up with the dispatch sinks installed. RX frames
      * arriving before set_mode installs a handler are dropped, matching
      * the old "no recv cb registered until start" behaviour. */
-    esp_err_t radio_err = t->open(t->ctx, _rx_dispatch, _tx_done_sink, net);
+    esp_err_t radio_err = t->open(t->ctx, _rx_dispatch, _tx_done_sink, node);
     if (radio_err != ESP_OK) {
         /* The maps are already allocated — free them or every init retry
          * on a degraded radio leaks the bucket arrays. */
-        hashmap_free(&net->routes_map);
-        hashmap_free(&net->peers_map);
+        hashmap_free(&node->routes_map);
+        hashmap_free(&node->peers_map);
         ESP_LOGE(TAG, "Failed to open transport: %s", esp_err_to_name(radio_err));
         return radio_err;
     }
@@ -210,7 +224,7 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
      * also re-added by fpr_set_mode for client/host/extender — the
      * init-time add covers modes that never take a branch there
      * (BROADCAST/DEFAULT). */
-    if (config->channel >= 1 && config->channel <= 14) {
+    if (config->channel >= 1 && t->set_channel) {
         esp_err_t err = t->set_channel(t->ctx, config->channel);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Failed to set WiFi channel %d: %s", config->channel, esp_err_to_name(err));
@@ -218,18 +232,18 @@ esp_err_t fpr_init_at(fpr_node_t *net, const char *name, const fpr_init_config_t
             ESP_LOGI(TAG, "WiFi channel set to %d", config->channel);
         }
     }
-    if (_broadcast_peer_add(net, "default") != ESP_OK) {
+    if (_broadcast_peer_add(node, "default") != ESP_OK) {
         ESP_LOGW(TAG, "Broadcast peer add failed at init");
     }
 
-    net->state = FPR_STATE_INITIALIZED;
-    net->paused = false;
+    node->state = FPR_STATE_INITIALIZED;
+    node->paused = false;
     
     ESP_LOGI(TAG, "FPR Network initialized: %s (" MACSTR ") ch=%d pwr=%s queue=%s", 
-             net->name, MAC2STR(net->mac),
-             net->channel ? net->channel : 0,
-             net->power_mode == FPR_POWER_LOW ? "LOW" : "NORMAL",
-             net->default_queue_mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
+             node->name, MAC2STR(node->mac),
+             node->channel ? node->channel : 0,
+             node->power_mode == FPR_POWER_LOW ? "LOW" : "NORMAL",
+             node->default_queue_mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
     return ESP_OK;
 }
 
@@ -247,36 +261,37 @@ static void _peer_cleanup_cb(void *key, void *value, void *user_data)
     }
 }
 
-static void _reset_all_peers(fpr_node_t *net)
+static void _reset_all_peers(fpr_node_t *node)
 {
-    hashmap_foreach(&net->peers_map, _peer_cleanup_cb, net);
+    hashmap_foreach(&node->peers_map, _peer_cleanup_cb, node);
 }
 
-esp_err_t fpr_deinit(fpr_node_t *net)
+esp_err_t fpr_deinit(fpr_node_t *node)
 {
+    FPR_REQUIRE_NODE(node);
     /* Quiesce gate FIRST — peer adds and extender route learning reject
      * immediately; a callback still in flight sees UNINITIALIZED when it
      * re-checks state under the lock, before any teardown below runs. */
-    _peers_lock(net);
-    net->state = FPR_STATE_UNINITIALIZED;
-    _peers_unlock(net);
+    _peers_lock(node);
+    node->state = FPR_STATE_UNINITIALIZED;
+    _peers_unlock(node);
 
     /* Ask the internal tasks to exit rather than vTaskDelete them: a
      * task killed while holding peers_lock strands the recursive mutex
      * for every later caller (FreeRTOS never releases a dead task's
      * mutexes). The helper joins on the task clearing its own handle
      * slot inside a poll-interval grace window. */
-    net->loop_armed = false;
-    net->reconnect_armed = false;
-    _fpr_task_stop(net, &net->reconnect_task, &net->reconnect_stop_requested);
-    _fpr_task_stop(net, &net->loop_task, &net->loop_stop_requested);
+    node->loop_armed = false;
+    node->reconnect_armed = false;
+    _fpr_task_stop(node, &node->reconnect_task, &node->reconnect_stop_requested);
+    _fpr_task_stop(node, &node->loop_task, &node->loop_stop_requested);
 
     /* close() unregisters the recv sink before tearing the radio down:
      * nothing new is dispatched on the wifi task after it returns, so
      * only callbacks already in flight remain below. A deinit before
      * any successful init has no transport yet — nothing to close. */
-    esp_err_t radio_result = net->transport
-        ? net->transport->close(net->transport->ctx) : ESP_OK;
+    esp_err_t radio_result = node->transport
+        ? node->transport->close(node->transport->ctx) : ESP_OK;
 
     /* Drain the callbacks dispatched before the transport closed: they
      * finish on the still-valid lock + maps (writes gated by the state
@@ -290,12 +305,12 @@ esp_err_t fpr_deinit(fpr_node_t *net)
      * hashmap_free leaves in a safe empty state — every map op is a
      * no-op returning NULL on NULL buckets — and each deinit pass
      * restores exactly that state for the next cycle. */
-    _peers_lock(net);
-    _reset_all_peers(net);
-    hashmap_free(&net->peers_map);
-    hashmap_foreach(&net->routes_map, _route_free_cb, NULL);
-    hashmap_free(&net->routes_map);
-    _peers_unlock(net);
+    _peers_lock(node);
+    _reset_all_peers(node);
+    hashmap_free(&node->peers_map);
+    hashmap_foreach(&node->routes_map, _route_free_cb, NULL);
+    hashmap_free(&node->routes_map);
+    _peers_unlock(node);
 
     /* peers_lock survives deinit: a straggler callback or a blocked
      * get_data_from_peer reader may still reach for it after the memset
@@ -303,12 +318,12 @@ esp_err_t fpr_deinit(fpr_node_t *net)
      * For heap nodes (owns_storage) fpr_destroy frees it once the
      * caller guarantees callbacks have drained; caller-provided
      * (static) nodes keep the lock alive — the storage owner decides. */
-    SemaphoreHandle_t kept_lock = net->peers_lock;
-    bool owned = net->owns_storage;
-    memset(net, 0, sizeof(*net));
-    net->state = FPR_STATE_UNINITIALIZED;
-    net->peers_lock = kept_lock;
-    net->owns_storage = owned;
+    SemaphoreHandle_t kept_lock = node->peers_lock;
+    bool owned = node->owns_storage;
+    memset(node, 0, sizeof(*node));
+    node->state = FPR_STATE_UNINITIALIZED;
+    node->peers_lock = kept_lock;
+    node->owns_storage = owned;
 
     return radio_result;
 }
@@ -317,60 +332,60 @@ esp_err_t fpr_deinit(fpr_node_t *net)
 esp_err_t fpr_create(const fpr_node_config_t *cfg, fpr_node_t **out)
 {
     ESP_RETURN_ON_FALSE(cfg != NULL && out != NULL, ESP_ERR_INVALID_ARG, TAG, "NULL arg");
-    fpr_node_t *net = heap_caps_calloc(1, sizeof(*net), MALLOC_CAP_8BIT);
-    if (net == NULL) {
+    fpr_node_t *node = heap_caps_calloc(1, sizeof(*node), MALLOC_CAP_8BIT);
+    if (node == NULL) {
         return ESP_ERR_NO_MEM;
     }
-    net->owns_storage = true;
-    net->callbacks = cfg->callbacks;
-    esp_err_t err = fpr_init_at(net, cfg->name, &cfg->init);
+    node->owns_storage = true;
+    node->callbacks = cfg->callbacks;
+    esp_err_t err = fpr_init_at(node, cfg->name, &cfg->init);
     if (err != ESP_OK) {
-        if (net->peers_lock != NULL) {
-            vSemaphoreDelete(net->peers_lock);
+        if (node->peers_lock != NULL) {
+            vSemaphoreDelete(node->peers_lock);
         }
-        heap_caps_free(net);
+        heap_caps_free(node);
         return err;
     }
-    *out = net;
+    *out = node;
     return ESP_OK;
 }
 
-void fpr_destroy(fpr_node_t *net)
+void fpr_destroy(fpr_node_t *node)
 {
-    if (net == NULL) {
+    if (node == NULL) {
         return;
     }
     /* Legal only after fpr_deinit(): the transport close there has
      * drained every callback, so freeing the lock is now safe for an
      * owned node. */
-    if (net->state != FPR_STATE_UNINITIALIZED) {
-        fpr_deinit(net);
+    if (node->state != FPR_STATE_UNINITIALIZED) {
+        fpr_deinit(node);
     }
-    if (!net->owns_storage) {
+    if (!node->owns_storage) {
         /* Caller-provided storage (fpr_init_at): the node is left
          * deinitialized and peers_lock stays alive — freeing either is
          * the storage owner's call. */
         return;
     }
-    if (net->peers_lock != NULL) {
-        vSemaphoreDelete(net->peers_lock);
+    if (node->peers_lock != NULL) {
+        vSemaphoreDelete(node->peers_lock);
     }
-    heap_caps_free(net);
+    heap_caps_free(node);
 }
 
 /* Runtime callback table swap — the registered pointers may fire from
  * the transport RX context, so callers must keep them valid until
  * fpr_stop()/fpr_deinit() drains it. */
-esp_err_t fpr_set_callbacks(fpr_node_t *net, const fpr_node_callbacks_t *callbacks)
+esp_err_t fpr_set_callbacks(fpr_node_t *node, const fpr_node_callbacks_t *callbacks)
 {
-    ESP_RETURN_ON_FALSE(net != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL");
-    _peers_lock(net);
+    FPR_REQUIRE_NODE(node);
+    _peers_lock(node);
     if (callbacks != NULL) {
-        net->callbacks = *callbacks;
+        node->callbacks = *callbacks;
     } else {
-        net->callbacks = (fpr_node_callbacks_t){0};
+        node->callbacks = (fpr_node_callbacks_t){0};
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
     return ESP_OK;
 }
 
@@ -394,50 +409,55 @@ static void _tx_done_sink(void *sink, const uint8_t *mac, bool ok)
  * the transport's RX context (the wifi task under ESP-NOW). */
 static void _rx_dispatch(void *sink, const fpr_rx_frame_t *frame)
 {
-    fpr_node_t *net = (fpr_node_t *)sink;
-    if (net && frame && frame->data && net->rx_handler) {
-        net->rx_handler(net, frame, frame->data, (int)frame->len);
+    fpr_node_t *node = (fpr_node_t *)sink;
+    /* A frame we cannot address cannot be routed: src/dst MAC are
+     * required by every mode handler. */
+    if (node && frame && frame->data && frame->src_mac && frame->dst_mac &&
+        node->rx_handler) {
+        node->rx_handler(node, frame, frame->data, (int)frame->len);
     }
 }
 
-esp_err_t fpr_start(fpr_node_t *net)
+esp_err_t fpr_start(fpr_node_t *node)
 {
-    ESP_RETURN_ON_FALSE(net->state == FPR_STATE_INITIALIZED || net->state == FPR_STATE_STOPPED,
-                        ESP_ERR_INVALID_STATE, TAG, "Network not initialized (state %d)", net->state);
-    ESP_RETURN_ON_FALSE(net->transport->ready(net->transport->ctx),
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(node->state == FPR_STATE_INITIALIZED || node->state == FPR_STATE_STOPPED,
+                        ESP_ERR_INVALID_STATE, TAG, "Network not initialized (state %d)", node->state);
+    ESP_RETURN_ON_FALSE(node->transport->ready(node->transport->ctx),
                         ESP_ERR_INVALID_STATE, TAG, "Radio is not initialized or in a usable mode");
 
     /* A node that never picked a mode comes up as a CLIENT — modeless
      * started nodes have no RX handler and would silently drop frames.
      * An explicit fpr_set_mode() before start is honored. */
-    if (net->current_mode == FPR_MODE_DEFAULT) {
-        fpr_set_mode(net, FPR_MODE_CLIENT);
+    if (node->current_mode == FPR_MODE_DEFAULT) {
+        fpr_set_mode(node, FPR_MODE_CLIENT);
     }
 
-    _peers_lock(net);
-    net->state = FPR_STATE_STARTED;
-    net->paused = false;
-    _peers_unlock(net);
+    _peers_lock(node);
+    node->state = FPR_STATE_STARTED;
+    node->paused = false;
+    _peers_unlock(node);
 
-    ESP_LOGI(TAG, "FPR Network started with MAC: " MACSTR, MAC2STR(net->mac));
+    ESP_LOGI(TAG, "FPR Network started with MAC: " MACSTR, MAC2STR(node->mac));
     return ESP_OK;
 }
 
-esp_err_t fpr_stop(fpr_node_t *net)
+esp_err_t fpr_stop(fpr_node_t *node)
 {
-    if (net->state == FPR_STATE_STOPPED || net->state == FPR_STATE_UNINITIALIZED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state == FPR_STATE_STOPPED || node->state == FPR_STATE_UNINITIALIZED) {
         ESP_LOGW(TAG, "Network already stopped or not initialized");
         return ESP_OK;
     }
     
-    _peers_lock(net);
-    net->state = FPR_STATE_STOPPED;
-    net->paused = false;
+    _peers_lock(node);
+    node->state = FPR_STATE_STOPPED;
+    node->paused = false;
     /* Stop means no periodic work: a stopped node must not keep
      * broadcasting or reconnecting via fpr_poll / the node tasks. */
-    net->loop_armed = false;
-    net->reconnect_armed = false;
-    _peers_unlock(net);
+    node->loop_armed = false;
+    node->reconnect_armed = false;
+    _peers_unlock(node);
     ESP_LOGI(TAG, "Network stopped");
     return ESP_OK;
 }
@@ -445,223 +465,241 @@ esp_err_t fpr_stop(fpr_node_t *net)
 /* Install the mode's protocol handler for _rx_dispatch. An assignment
  * now — the transport sink is fixed — kept as a function so set_mode
  * stays readable. */
-static esp_err_t _set_rx_handler(fpr_node_t *net,
-                                 void (*handler)(fpr_node_t *, const fpr_rx_frame_t *,
-                                                 const uint8_t *, int))
+/* Install the mode's protocol handler for _rx_dispatch. An assignment
+ * — the transport sink is fixed — kept as a function so set_mode
+ * stays readable. */
+static void _set_rx_handler(fpr_node_t *node,
+                            void (*handler)(fpr_node_t *, const fpr_rx_frame_t *,
+                                            const uint8_t *, int))
 {
-    net->rx_handler = handler;
-    return ESP_OK;
+    node->rx_handler = handler;
 }
 
-void _client_loop_step(fpr_node_t *net)
+void _client_loop_step(fpr_node_t *node)
 {
     /* The RX handler does all the work; the loop interval only paces it. */
-    (void)net;
+    (void)node;
 }
 
-void _host_loop_step(fpr_node_t *net)
+void _host_loop_step(fpr_node_t *node)
 {
     /* Announce presence — the RX handler does the connection work. */
-    fpr_broadcast_device_info(net);
+    fpr_broadcast_device_info(node);
 }
 
-static void _loop_step(fpr_node_t *net)
+static void _loop_step(fpr_node_t *node)
 {
-    if (net->current_mode == FPR_MODE_HOST) {
-        _host_loop_step(net);
+    if (node->current_mode == FPR_MODE_HOST) {
+        _host_loop_step(node);
     } else {
-        _client_loop_step(net);
+        _client_loop_step(node);
     }
 }
 
 /* Shared pacing for both periodic halves — power-mode stretched. */
-static uint32_t _step_interval_ms(fpr_node_t *net)
+static uint32_t _step_interval_ms(fpr_node_t *node)
 {
-    return _power_interval(net, net->current_mode == FPR_MODE_HOST
+    return _power_interval(node, node->current_mode == FPR_MODE_HOST
                                   ? FPR_HOST_SCAN_POLL_INTERVAL_MS
                                   : FPR_CLIENT_WAIT_CHECK_INTERVAL_MS);
 }
 
-static void _reconnect_step(fpr_node_t *net, uint32_t now_ms)
+static void _reconnect_step(fpr_node_t *node, uint32_t now_ms)
 {
-    if (net->current_mode == FPR_MODE_HOST) {
-        _host_reconnect_step(net, now_ms);
+    if (node->current_mode == FPR_MODE_HOST) {
+        _host_reconnect_step(node, now_ms);
     } else {
-        _client_reconnect_step(net, now_ms);
+        _client_reconnect_step(node, now_ms);
     }
 }
 
-static uint32_t _poll_loop(fpr_node_t *net, uint32_t now_ms);
-static uint32_t _poll_reconnect(fpr_node_t *net, uint32_t now_ms);
+static uint32_t _poll_loop(fpr_node_t *node, uint32_t now_ms);
+static uint32_t _poll_reconnect(fpr_node_t *node, uint32_t now_ms);
 
 /* Loop task body: arg is the node. Exit when disarmed (duration bound
  * reached) or stop-requested — poll() disarms on the deadline. */
 static void _fpr_loop_task_entry(void *arg)
 {
-    fpr_node_t *net = (fpr_node_t *)arg;
+    fpr_node_t *node = (fpr_node_t *)arg;
     ESP_LOGI(TAG, "%s loop task started",
-             net->current_mode == FPR_MODE_HOST ? "Host" : "Client");
+             node->current_mode == FPR_MODE_HOST ? "Host" : "Client");
 
-    while (!net->loop_stop_requested && net->loop_armed) {
+    while (!node->loop_stop_requested && node->loop_armed) {
         uint32_t now_ms = (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
-        uint32_t wait_ms = _poll_loop(net, now_ms);
+        uint32_t wait_ms = _poll_loop(node, now_ms);
         if (wait_ms == 0 || wait_ms == UINT32_MAX) {
-            wait_ms = _step_interval_ms(net);
+            wait_ms = _step_interval_ms(node);
         }
         /* wait_ms is relative to now, not last_wake — vTaskDelayUntil
          * would wake early by (now - last_wake) and spin re-polls. */
         vTaskDelay(pdMS_TO_TICKS(wait_ms));
     }
 
-    _task_exit(net, &net->loop_task);
+    _task_exit(node, &node->loop_task);
 }
 
 /* Same pattern for the reconnect/keepalive task — runs only the
  * reconnect half of the poll so the two tasks never double-step. */
 static void _fpr_reconnect_task_entry(void *arg)
 {
-    fpr_node_t *net = (fpr_node_t *)arg;
+    fpr_node_t *node = (fpr_node_t *)arg;
     TickType_t last_wake = xTaskGetTickCount();
 
-    while (!net->reconnect_stop_requested && net->reconnect_armed) {
+    while (!node->reconnect_stop_requested && node->reconnect_armed) {
         uint32_t now_ms = (uint32_t)xTaskGetTickCount() * portTICK_PERIOD_MS;
-        _poll_reconnect(net, now_ms);
+        _poll_reconnect(node, now_ms);
         /* vTaskDelayUntil stays here on purpose: this task paces a fixed
          * interval (not a poll-returned deadline relative to now), which
          * is exactly the periodic-wakeup primitive's contract. */
         vTaskDelayUntil(&last_wake,
-                        pdMS_TO_TICKS(_step_interval_ms(net)));
+                        pdMS_TO_TICKS(_step_interval_ms(node)));
     }
 
-    _task_exit(net, &net->reconnect_task);
+    _task_exit(node, &node->reconnect_task);
 }
 
-void fpr_set_mode(fpr_node_t *net, fpr_mode_type_t mode)
+esp_err_t fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode)
 {
-    net->current_mode = mode;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(mode >= FPR_MODE_DEFAULT && mode <= FPR_MODE_EXTENDER,
+                        ESP_ERR_INVALID_ARG, TAG, "Invalid mode %d", (int)mode);
+    node->current_mode = mode;
     /* Mesh forwarding only runs in extender mode. */
-    net->routing_enabled = (mode == FPR_MODE_EXTENDER);
+    node->routing_enabled = (mode == FPR_MODE_EXTENDER);
 
     /* Client/host/extender each need the broadcast peer registered and
-     * the mode's RX handler installed. Failures only get logged: the
-     * signature is void, and a missing broadcast peer or a stale RX
-     * handler is diagnosable rather than silently misdispatching. */
+     * the mode's RX handler installed. The mode itself is applied even
+     * when a step fails; the first failure is reported to the caller. */
+    esp_err_t first_err = ESP_OK;
     if (mode == FPR_MODE_CLIENT) {
-        if (_broadcast_peer_add(net, "client") != ESP_OK) {
-            ESP_LOGW(TAG, "Broadcast peer add failed for client mode");
+        first_err = _broadcast_peer_add(node, "client");
+        if (first_err != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for client mode: %s",
+                     esp_err_to_name(first_err));
         }
-        if (_set_rx_handler(net, _rx_client) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to install client RX handler");
-        }
+        _set_rx_handler(node, _rx_client);
     }
     else if (mode == FPR_MODE_HOST) {
-        if (_broadcast_peer_add(net, "host") != ESP_OK) {
-            ESP_LOGW(TAG, "Broadcast peer add failed for host mode");
+        first_err = _broadcast_peer_add(node, "host");
+        if (first_err != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for host mode: %s",
+                     esp_err_to_name(first_err));
         }
         // Generate host PWK for secure connections — under the lock so
         // rx callbacks never observe a valid flag ahead of the key bytes
-        _peers_lock(net);
-        if (fpr_security_generate_pwk(net->host_pwk) == ESP_OK) {
-            net->host_pwk_valid = true;
+        _peers_lock(node);
+        esp_err_t pwk_err = fpr_security_generate_pwk(node->host_pwk);
+        if (pwk_err == ESP_OK) {
+            node->host_pwk_valid = true;
             ESP_LOGI(TAG, "Host mode set with generated PWK");
         } else {
-            ESP_LOGE(TAG, "Failed to generate PWK for host mode");
+            ESP_LOGE(TAG, "Failed to generate PWK for host mode: %s",
+                     esp_err_to_name(pwk_err));
+            if (first_err == ESP_OK) {
+                first_err = pwk_err;
+            }
         }
-        _peers_unlock(net);
-        if (_set_rx_handler(net, _rx_host) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to install host RX handler");
-        }
+        _peers_unlock(node);
+        _set_rx_handler(node, _rx_host);
     }
     else if (mode == FPR_MODE_EXTENDER) {
-        if (_broadcast_peer_add(net, "extender") != ESP_OK) {
-            ESP_LOGW(TAG, "Broadcast peer add failed for extender mode");
+        first_err = _broadcast_peer_add(node, "extender");
+        if (first_err != ESP_OK) {
+            ESP_LOGW(TAG, "Broadcast peer add failed for extender mode: %s",
+                     esp_err_to_name(first_err));
         }
-        if (_set_rx_handler(net, _rx_extender) != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to install extender RX handler");
-        }
+        _set_rx_handler(node, _rx_extender);
     }
     else {
         /* FPR_MODE_DEFAULT/FPR_MODE_BROADCAST: accepted but have no
          * handler of their own — the previous mode's RX stays armed. */
         ESP_LOGW(TAG, "Mode %d has no handler — RX callback unchanged", (int)mode);
     }
+    return first_err;
 }
 
-fpr_mode_type_t fpr_get_mode(fpr_node_t *net)
+esp_err_t fpr_get_mode(fpr_node_t *node, fpr_mode_type_t *out)
 {
-    return net->current_mode;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->current_mode;
+    return ESP_OK;
 }
 
 // ========== PERIODIC WORK: poll + task control ==========
 
-esp_err_t fpr_start_loop(fpr_node_t *net, uint32_t duration_ms)
+esp_err_t fpr_start_loop(fpr_node_t *node, uint32_t duration_ms)
 {
-    if (net->state == FPR_STATE_UNINITIALIZED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (net->current_mode == FPR_MODE_EXTENDER) {
+    if (node->current_mode == FPR_MODE_EXTENDER) {
         return ESP_ERR_NOT_SUPPORTED;
     }
-    if (net->current_mode != FPR_MODE_CLIENT && net->current_mode != FPR_MODE_HOST) {
+    if (node->current_mode != FPR_MODE_CLIENT && node->current_mode != FPR_MODE_HOST) {
         return ESP_ERR_INVALID_STATE;
     }
-    net->loop_armed = true;
+    node->loop_armed = true;
     /* Due at the next poll call; the deadline is anchored against the
      * poll clock on the first run (duration_ms == 0 means run forever). */
-    net->loop_next_due_ms = 0;
-    net->loop_duration_ms = duration_ms;
-    net->loop_deadline_ms = 0;
+    node->loop_next_due_ms = 0;
+    node->loop_duration_ms = duration_ms;
+    node->loop_deadline_ms = 0;
     return ESP_OK;
 }
 
-esp_err_t fpr_stop_loop(fpr_node_t *net)
+esp_err_t fpr_stop_loop(fpr_node_t *node)
 {
-    net->loop_armed = false;
+    FPR_REQUIRE_NODE(node);
+    node->loop_armed = false;
     return ESP_OK;
 }
 
-esp_err_t fpr_start_reconnect(fpr_node_t *net)
+esp_err_t fpr_start_reconnect(fpr_node_t *node)
 {
-    if (net->state == FPR_STATE_UNINITIALIZED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (net->current_mode != FPR_MODE_CLIENT && net->current_mode != FPR_MODE_HOST) {
+    if (node->current_mode != FPR_MODE_CLIENT && node->current_mode != FPR_MODE_HOST) {
         return ESP_ERR_INVALID_STATE;
     }
-    net->reconnect_armed = true;
-    net->reconnect_next_due_ms = 0;
+    node->reconnect_armed = true;
+    node->reconnect_next_due_ms = 0;
     return ESP_OK;
 }
 
-esp_err_t fpr_stop_reconnect(fpr_node_t *net)
+esp_err_t fpr_stop_reconnect(fpr_node_t *node)
 {
-    net->reconnect_armed = false;
+    FPR_REQUIRE_NODE(node);
+    node->reconnect_armed = false;
     return ESP_OK;
 }
 
-static uint32_t _poll_loop(fpr_node_t *net, uint32_t now_ms)
+static uint32_t _poll_loop(fpr_node_t *node, uint32_t now_ms)
 {
     uint32_t next = UINT32_MAX;
 
-    if (net->loop_armed) {
-        if (net->loop_deadline_ms == 0 && net->loop_duration_ms) {
-            net->loop_deadline_ms = now_ms + net->loop_duration_ms;
+    if (node->loop_armed) {
+        if (node->loop_deadline_ms == 0 && node->loop_duration_ms) {
+            node->loop_deadline_ms = now_ms + node->loop_duration_ms;
         }
-        if (net->loop_deadline_ms && (int32_t)(now_ms - net->loop_deadline_ms) >= 0) {
-            net->loop_armed = false;
+        if (node->loop_deadline_ms && (int32_t)(now_ms - node->loop_deadline_ms) >= 0) {
+            node->loop_armed = false;
         /* next_due == 0 is the "armed, due at next poll" sentinel from
          * fpr_start_loop — comparing it as a timestamp would read as
          * far-future once now_ms passes 2^31. A computed due can only
          * hit 0 once per epoch wrap, costing at most one early step. */
-        } else if (net->loop_next_due_ms == 0 ||
-                   (int32_t)(now_ms - net->loop_next_due_ms) >= 0) {
-            _loop_step(net);
-            net->loop_next_due_ms = now_ms + _step_interval_ms(net);
+        } else if (node->loop_next_due_ms == 0 ||
+                   (int32_t)(now_ms - node->loop_next_due_ms) >= 0) {
+            _loop_step(node);
+            node->loop_next_due_ms = now_ms + _step_interval_ms(node);
         }
-        if (net->loop_armed) {
-            uint32_t due = net->loop_next_due_ms - now_ms;
-            if (net->loop_deadline_ms) {
-                uint32_t dl = net->loop_deadline_ms - now_ms;
+        if (node->loop_armed) {
+            uint32_t due = node->loop_next_due_ms - now_ms;
+            if (node->loop_deadline_ms) {
+                uint32_t dl = node->loop_deadline_ms - now_ms;
                 if (dl < due) {
                     due = dl;
                 }
@@ -675,18 +713,18 @@ static uint32_t _poll_loop(fpr_node_t *net, uint32_t now_ms)
     return next;
 }
 
-static uint32_t _poll_reconnect(fpr_node_t *net, uint32_t now_ms)
+static uint32_t _poll_reconnect(fpr_node_t *node, uint32_t now_ms)
 {
     uint32_t next = UINT32_MAX;
 
-    if (net->reconnect_armed) {
+    if (node->reconnect_armed) {
         /* Same 0 sentinel as the loop half (see _poll_loop). */
-        if (net->reconnect_next_due_ms == 0 ||
-            (int32_t)(now_ms - net->reconnect_next_due_ms) >= 0) {
-            _reconnect_step(net, now_ms);
-            net->reconnect_next_due_ms = now_ms + _step_interval_ms(net);
+        if (node->reconnect_next_due_ms == 0 ||
+            (int32_t)(now_ms - node->reconnect_next_due_ms) >= 0) {
+            _reconnect_step(node, now_ms);
+            node->reconnect_next_due_ms = now_ms + _step_interval_ms(node);
         }
-        uint32_t due = net->reconnect_next_due_ms - now_ms;
+        uint32_t due = node->reconnect_next_due_ms - now_ms;
         if (due < next) {
             next = due;
         }
@@ -695,26 +733,31 @@ static uint32_t _poll_reconnect(fpr_node_t *net, uint32_t now_ms)
     return next;
 }
 
-uint32_t fpr_poll(fpr_node_t *net, uint32_t now_ms)
+esp_err_t fpr_poll(fpr_node_t *node, uint32_t now_ms, uint32_t *next_due_ms_out)
 {
-    uint32_t l = _poll_loop(net, now_ms);
-    uint32_t r = _poll_reconnect(net, now_ms);
-    return l < r ? l : r;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(next_due_ms_out != NULL, ESP_ERR_INVALID_ARG, TAG,
+                        "Output is NULL");
+    uint32_t l = _poll_loop(node, now_ms);
+    uint32_t r = _poll_reconnect(node, now_ms);
+    *next_due_ms_out = l < r ? l : r;
+    return ESP_OK;
 }
 
 /* Spawn one periodic task on caller-owned static storage. The handle
- * lands in net->loop_task / net->reconnect_task so the cooperative
+ * lands in node->loop_task / node->reconnect_task so the cooperative
  * stop path is shared with fpr_stop(). */
-static esp_err_t _spawn_task(fpr_node_t *net, void (*entry)(void *),
+static esp_err_t _spawn_task(fpr_node_t *node, void (*entry)(void *),
                              const char *name, const fpr_task_slot_t *slot,
                              TaskHandle_t *handle, volatile bool *stop_flag)
 {
-    if (slot == NULL || slot->stack == NULL || slot->tcb == NULL) {
+    if (slot == NULL || slot->stack == NULL || slot->tcb == NULL ||
+        slot->stack_bytes == 0) {
         return ESP_ERR_INVALID_ARG;
     }
     *stop_flag = false;
     TaskHandle_t h = xTaskCreateStaticPinnedToCore(
-        entry, name, slot->stack_bytes, net, slot->priority,
+        entry, name, slot->stack_bytes, node, slot->priority,
         slot->stack, slot->tcb, slot->core);
     if (h == NULL) {
         return ESP_ERR_NO_MEM;
@@ -724,166 +767,206 @@ static esp_err_t _spawn_task(fpr_node_t *net, void (*entry)(void *),
     return ESP_OK;
 }
 
-esp_err_t fpr_start_loop_task(fpr_node_t *net, uint32_t duration_ms,
+esp_err_t fpr_start_loop_task(fpr_node_t *node, uint32_t duration_ms,
                               const fpr_task_slot_t *slot, bool force_restart)
 {
-    if (net->state == FPR_STATE_UNINITIALIZED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (net->loop_task != NULL && !force_restart) {
+    if (node->loop_task != NULL && !force_restart) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (net->loop_task != NULL) {
-        _fpr_task_stop(net, &net->loop_task, &net->loop_stop_requested);
+    if (node->loop_task != NULL) {
+        _fpr_task_stop(node, &node->loop_task, &node->loop_stop_requested);
     }
-    esp_err_t err = fpr_start_loop(net, duration_ms);
+    esp_err_t err = fpr_start_loop(node, duration_ms);
     if (err != ESP_OK) {
         return err;
     }
-    err = _spawn_task(net, _fpr_loop_task_entry, "FPR_Loop", slot,
-                      &net->loop_task, &net->loop_stop_requested);
+    err = _spawn_task(node, _fpr_loop_task_entry, "FPR_Loop", slot,
+                      &node->loop_task, &node->loop_stop_requested);
     if (err != ESP_OK) {
-        net->loop_armed = false;
+        node->loop_armed = false;
     }
     return err;
 }
 
-esp_err_t fpr_stop_loop_task(fpr_node_t *net)
+esp_err_t fpr_stop_loop_task(fpr_node_t *node)
 {
-    if (net->loop_task == NULL) {
+    FPR_REQUIRE_NODE(node);
+    if (node->loop_task == NULL) {
         return ESP_ERR_INVALID_STATE;
     }
-    net->loop_armed = false;
-    _fpr_task_stop(net, &net->loop_task, &net->loop_stop_requested);
+    node->loop_armed = false;
+    _fpr_task_stop(node, &node->loop_task, &node->loop_stop_requested);
     return ESP_OK;
 }
 
-bool fpr_loop_task_running(fpr_node_t *net)
+esp_err_t fpr_loop_task_running(fpr_node_t *node, bool *out)
 {
-    return net->loop_task != NULL;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->loop_task != NULL;
+    return ESP_OK;
 }
 
-esp_err_t fpr_start_reconnect_task(fpr_node_t *net, const fpr_task_slot_t *slot)
+esp_err_t fpr_start_reconnect_task(fpr_node_t *node, const fpr_task_slot_t *slot)
 {
-    if (net->state == FPR_STATE_UNINITIALIZED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (net->reconnect_task != NULL) {
+    if (node->reconnect_task != NULL) {
         ESP_LOGW(TAG, "Reconnect task already running");
         return ESP_ERR_INVALID_STATE;
     }
-    esp_err_t err = fpr_start_reconnect(net);
+    esp_err_t err = fpr_start_reconnect(node);
     if (err != ESP_OK) {
         return err;
     }
-    err = _spawn_task(net, _fpr_reconnect_task_entry, "FPR_Reconnect", slot,
-                      &net->reconnect_task, &net->reconnect_stop_requested);
+    err = _spawn_task(node, _fpr_reconnect_task_entry, "FPR_Reconnect", slot,
+                      &node->reconnect_task, &node->reconnect_stop_requested);
     if (err != ESP_OK) {
-        net->reconnect_armed = false;
+        node->reconnect_armed = false;
     }
     return err;
 }
 
-esp_err_t fpr_stop_reconnect_task(fpr_node_t *net)
+esp_err_t fpr_stop_reconnect_task(fpr_node_t *node)
 {
+    FPR_REQUIRE_NODE(node);
     /* Only stops the task — protocol handlers and network state are
      * intentionally untouched. */
-    if (net->reconnect_task == NULL) {
+    if (node->reconnect_task == NULL) {
         return ESP_OK;
     }
-    net->reconnect_armed = false;
-    _fpr_task_stop(net, &net->reconnect_task, &net->reconnect_stop_requested);
+    node->reconnect_armed = false;
+    _fpr_task_stop(node, &node->reconnect_task, &node->reconnect_stop_requested);
     return ESP_OK;
 }
 
-bool fpr_reconnect_task_running(fpr_node_t *net)
+esp_err_t fpr_reconnect_task_running(fpr_node_t *node, bool *out)
 {
-    return net->reconnect_task != NULL;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->reconnect_task != NULL;
+    return ESP_OK;
 }
 
 // ========== NETWORK STATE MANAGEMENT ==========
 
-esp_err_t fpr_pause(fpr_node_t *net)
+esp_err_t fpr_pause(fpr_node_t *node)
 {
-    if (net->state != FPR_STATE_STARTED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state != FPR_STATE_STARTED) {
         ESP_LOGW(TAG, "Network not started, cannot pause");
         return ESP_ERR_INVALID_STATE;
     }
     
-    _peers_lock(net);
-    net->paused = true;
-    net->state = FPR_STATE_PAUSED;
-    _peers_unlock(net);
+    _peers_lock(node);
+    node->paused = true;
+    node->state = FPR_STATE_PAUSED;
+    _peers_unlock(node);
     ESP_LOGI(TAG, "Network paused");
     return ESP_OK;
 }
 
-esp_err_t fpr_resume(fpr_node_t *net)
+esp_err_t fpr_resume(fpr_node_t *node)
 {
-    if (net->state != FPR_STATE_PAUSED) {
+    FPR_REQUIRE_NODE(node);
+    if (node->state != FPR_STATE_PAUSED) {
         ESP_LOGW(TAG, "Network not paused, cannot resume");
         return ESP_ERR_INVALID_STATE;
     }
     
-    _peers_lock(net);
-    net->paused = false;
-    net->state = FPR_STATE_STARTED;
-    _peers_unlock(net);
+    _peers_lock(node);
+    node->paused = false;
+    node->state = FPR_STATE_STARTED;
+    _peers_unlock(node);
     ESP_LOGI(TAG, "Network resumed");
     return ESP_OK;
 }
 
-fpr_state_t fpr_get_state(fpr_node_t *net)
+esp_err_t fpr_get_state(fpr_node_t *node, fpr_state_t *out)
 {
-    return net->state;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->state;
+    return ESP_OK;
 }
 
-void fpr_set_power_mode(fpr_node_t *net, fpr_power_mode_t mode)
+esp_err_t fpr_set_power_mode(fpr_node_t *node, fpr_power_mode_t mode)
 {
-    _peers_lock(net);
-    net->power_mode = mode;
-    _peers_unlock(net);
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(mode == FPR_POWER_NORMAL || mode == FPR_POWER_LOW,
+                        ESP_ERR_INVALID_ARG, TAG, "Invalid power mode %d", (int)mode);
+    _peers_lock(node);
+    node->power_mode = mode;
+    _peers_unlock(node);
     ESP_LOGI(TAG, "Power mode set to %s", mode == FPR_POWER_LOW ? "LOW" : "NORMAL");
+    return ESP_OK;
 }
 
-fpr_power_mode_t fpr_get_power_mode(fpr_node_t *net)
+esp_err_t fpr_get_power_mode(fpr_node_t *node, fpr_power_mode_t *out)
 {
-    return net->power_mode;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->power_mode;
+    return ESP_OK;
 }
 
-uint8_t fpr_get_channel(fpr_node_t *net)
+esp_err_t fpr_get_channel(fpr_node_t *node, uint8_t *out)
 {
-    return net->channel;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->channel;
+    return ESP_OK;
 }
 
 // ========== QUEUE MODE API ==========
 
-void fpr_set_queue_mode(fpr_node_t *net, fpr_queue_mode_t mode)
+esp_err_t fpr_set_queue_mode(fpr_node_t *node, fpr_queue_mode_t mode)
 {
-    _peers_lock(net);
-    net->default_queue_mode = mode;
-    _peers_unlock(net);
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(mode == FPR_QUEUE_MODE_NORMAL ||
+                        mode == FPR_QUEUE_MODE_LATEST_ONLY,
+                        ESP_ERR_INVALID_ARG, TAG, "Invalid queue mode %d", (int)mode);
+    _peers_lock(node);
+    node->default_queue_mode = mode;
+    _peers_unlock(node);
     ESP_LOGI(TAG, "Default queue mode set to %s",
              mode == FPR_QUEUE_MODE_LATEST_ONLY ? "LATEST_ONLY" : "NORMAL");
+    return ESP_OK;
 }
 
-void fpr_set_visibility(fpr_node_t *net, fpr_visibility_t state)
+esp_err_t fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state)
 {
-    _peers_lock(net);
-    net->access_state = state;
-    _peers_unlock(net);
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(state == FPR_VISIBILITY_PUBLIC ||
+                        state == FPR_VISIBILITY_PRIVATE,
+                        ESP_ERR_INVALID_ARG, TAG, "Invalid visibility %d", (int)state);
+    _peers_lock(node);
+    node->access_state = state;
+    _peers_unlock(node);
+    return ESP_OK;
 }
 
-fpr_visibility_t fpr_get_visibility(fpr_node_t *net)
+esp_err_t fpr_get_visibility(fpr_node_t *node, fpr_visibility_t *out)
 {
-    _peers_lock(net);
-    fpr_visibility_t state = net->access_state;
-    _peers_unlock(net);
-    return state;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    _peers_lock(node);
+    *out = node->access_state;
+    _peers_unlock(node);
+    return ESP_OK;
 }
 
-fpr_queue_mode_t fpr_get_queue_mode(fpr_node_t *net)
+esp_err_t fpr_get_queue_mode(fpr_node_t *node, fpr_queue_mode_t *out)
 {
-    return net->default_queue_mode;
+    FPR_REQUIRE_NODE(node);
+    ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
+    *out = node->default_queue_mode;
+    return ESP_OK;
 }
 

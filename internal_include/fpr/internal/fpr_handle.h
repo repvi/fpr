@@ -37,7 +37,7 @@ extern "C" {
  * @param version Protocol version from packet header
  * @return true if packet should be processed, false if rejected
  */
-bool fpr_version_handle_version(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version);
+bool fpr_version_dispatch(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version);
 
 #ifdef __cplusplus
 }

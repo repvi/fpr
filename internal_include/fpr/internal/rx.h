@@ -36,25 +36,25 @@ typedef struct {
  * rejected and no lock is held. count_drops charges rejects to
  * stats.packets_dropped and counts size-valid packets in
  * stats.packets_received (extender accounting; other modes pass false). */
-bool _rx_begin(fpr_node_t *net, const fpr_rx_frame_t *frame,
+bool _rx_begin(fpr_node_t *node, const fpr_rx_frame_t *frame,
                const uint8_t *data, int len,
                bool count_drops, fpr_rx_ctx_t *ctx);
 
 /** Client-mode receive handler: host discovery, handshake, data. */
-void _rx_client(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /** Host-mode receive handler: connection requests, handshake, data. */
-void _rx_host(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_host(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /** Extender-mode receive handler: route learning, forwarding, local delivery. */
-void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
+void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len);
 
 /* Single-step bodies shared by the node tasks and fpr_poll() — each
  * performs one iteration of the periodic work. */
-void _client_loop_step(fpr_node_t *net);
-void _host_loop_step(fpr_node_t *net);
-void _client_reconnect_step(fpr_node_t *net, uint32_t now_ms);
-void _host_reconnect_step(fpr_node_t *net, uint32_t now_ms);
+void _client_loop_step(fpr_node_t *node);
+void _host_loop_step(fpr_node_t *node);
+void _client_reconnect_step(fpr_node_t *node, uint32_t now_ms);
+void _host_reconnect_step(fpr_node_t *node, uint32_t now_ms);
 
 #ifdef __cplusplus
 }

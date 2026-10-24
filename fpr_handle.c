@@ -32,7 +32,7 @@ static void _log_version_info(code_version_t packet_version, const uint8_t *src_
              MAC2STR(src_mac));
 }
 
-bool fpr_version_handle_version(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version) 
+bool fpr_version_dispatch(const fpr_rx_frame_t *frame, const uint8_t *data, int len, code_version_t version) 
 {
     // Check basic version compatibility
     if (!fpr_version_is_compatible(version)) {

@@ -4,6 +4,11 @@
  * 
  * Processes packets from older firmware versions (v0 pre-versioning era).
  * Provides graceful degradation for networks with mixed firmware versions.
+ *
+ * NOTE: currently unwired — rx.c's version gate rejects v0 packets at
+ * the compatibility check before any legacy dispatch, so nothing calls
+ * these handlers. Retained (documented) as the migration hook for a
+ * future v2 protocol.
  * 
  * @version 1.0.0
  * @date December 2025
@@ -69,6 +74,9 @@ bool fpr_legacy_handle_protocol_v0(const fpr_rx_frame_t *frame, const uint8_t *d
 
 bool fpr_legacy_handle_protocol_version(code_version_t version, const fpr_rx_frame_t *frame, const uint8_t *data, int len) 
 {
-    // Handle legacy v0 packets (version=0)
+    /* Stub: no version-specific legacy processing exists yet (v0/v1 share
+     * the packet layout). Kept so the dispatch table has a stable shape
+     * when a real legacy handler is needed. */
+    (void)version; (void)frame; (void)data; (void)len;
     return false;
 }

@@ -38,7 +38,7 @@ typedef struct fpr_node fpr_node_t;
 typedef void (*fpr_data_cb_t)(void *user, const uint8_t *peer_mac, void *data, size_t len);
 
 /** Peer-iteration callback for fpr_foreach_peer() — @p peer is the
- *  internal peer store (opaque); use fpr_peer_info() for details. */
+ *  internal peer store (opaque); use fpr_peer_lookup() for details. */
 typedef void (*fpr_peer_cb_t)(void *user, const uint8_t *peer_mac, void *peer);
 
 /**
@@ -91,7 +91,7 @@ esp_err_t fpr_deinit(fpr_node_t *node);
  * @brief Stop the node and free it. Legal only after fpr_stop() +
  *        fpr_stop_loop_task()/fpr_stop_reconnect_task(): the transport
  *        close has then drained all RX/TX callbacks and no task
- *        references the storage.
+ *        references the storage. NULL-tolerant.
  */
 void fpr_destroy(fpr_node_t *node);
 
@@ -108,49 +108,75 @@ esp_err_t fpr_stop(fpr_node_t *node);
 esp_err_t fpr_pause(fpr_node_t *node);
 esp_err_t fpr_resume(fpr_node_t *node);
 
-fpr_state_t fpr_get_state(fpr_node_t *node);
-void fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode);
-fpr_mode_type_t fpr_get_mode(fpr_node_t *node);
-void fpr_set_power_mode(fpr_node_t *node, fpr_power_mode_t mode);
-fpr_power_mode_t fpr_get_power_mode(fpr_node_t *node);
-uint8_t fpr_get_channel(fpr_node_t *node);
-void fpr_set_queue_mode(fpr_node_t *node, fpr_queue_mode_t mode);
-fpr_queue_mode_t fpr_get_queue_mode(fpr_node_t *node);
+/* Every function below validates node != NULL and returns
+ * ESP_ERR_INVALID_ARG on violation — a NULL node never reaches a
+ * dereference. */
+
+esp_err_t fpr_get_state(fpr_node_t *node, fpr_state_t *out);
+
+/**
+ * @brief Set the operating mode. Registers the broadcast peer on the
+ *        transport, generates the host PWK (host mode) and installs
+ *        the mode's RX handler. The mode is applied even when a step
+ *        fails; the first failing step's error is returned.
+ */
+esp_err_t fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode);
+esp_err_t fpr_get_mode(fpr_node_t *node, fpr_mode_type_t *out);
+esp_err_t fpr_set_power_mode(fpr_node_t *node, fpr_power_mode_t mode);
+esp_err_t fpr_get_power_mode(fpr_node_t *node, fpr_power_mode_t *out);
+esp_err_t fpr_get_channel(fpr_node_t *node, uint8_t *out);
+esp_err_t fpr_set_queue_mode(fpr_node_t *node, fpr_queue_mode_t mode);
+esp_err_t fpr_get_queue_mode(fpr_node_t *node, fpr_queue_mode_t *out);
 esp_err_t fpr_set_peer_queue_mode(fpr_node_t *node, const uint8_t *peer_mac, fpr_queue_mode_t mode);
-uint32_t fpr_peer_queued_packets(fpr_node_t *node, const uint8_t *peer_mac);
-void fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
-fpr_visibility_t fpr_get_visibility(fpr_node_t *node);
+esp_err_t fpr_peer_queued_packets(fpr_node_t *node, const uint8_t *peer_mac, uint32_t *out);
+esp_err_t fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
+esp_err_t fpr_get_visibility(fpr_node_t *node, fpr_visibility_t *out);
 
 esp_err_t fpr_add_peer(fpr_node_t *node, const uint8_t *peer_mac);
 esp_err_t fpr_remove_peer(fpr_node_t *node, const uint8_t *peer_mac);
 esp_err_t fpr_clear_peers(fpr_node_t *node);
-int fpr_peer_count(fpr_node_t *node);
-size_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user);
-size_t fpr_list_peers(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
-esp_err_t fpr_peer_info(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_info_t *info);
-esp_err_t fpr_peer_by_name(fpr_node_t *node, const char *peer_name, uint8_t *mac_out);
-bool fpr_peer_reachable(fpr_node_t *node, const uint8_t *peer_mac, uint32_t timeout_ms);
+esp_err_t fpr_peer_count(fpr_node_t *node, size_t *out);
+esp_err_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user, size_t *visited_out);
+esp_err_t fpr_list_peers(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers, size_t *count_out);
+/** Look up one peer's info by MAC (fpr_peer_lookup, not the info type). */
+esp_err_t fpr_peer_lookup(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_info_t *info);
+/** Find a peer's MAC by its advertised name. */
+esp_err_t fpr_peer_find(fpr_node_t *node, const char *peer_name, uint8_t *mac_out);
+/**
+ * @brief Actively probe a peer: if it was seen within @p timeout_ms the
+ *        check is free; otherwise a device-info ping is sent and the
+ *        peer's last-seen stamp is watched until the deadline.
+ * @return ESP_OK reachable, ESP_ERR_TIMEOUT silent, error codes from
+ *         the send path propagate.
+ */
+esp_err_t fpr_peer_ping(fpr_node_t *node, const uint8_t *peer_mac, uint32_t timeout_ms);
 
-esp_err_t fpr_send(fpr_node_t *node, const uint8_t *peer_mac, const void *data, int size, fpr_package_id_t package_id);
-esp_err_t fpr_send_opts(fpr_node_t *node, const uint8_t *peer_mac, const void *data, int size, const fpr_send_options_t *options);
-esp_err_t fpr_broadcast(fpr_node_t *node, const void *data, int size, fpr_package_id_t package_id);
+esp_err_t fpr_send(fpr_node_t *node, const uint8_t *peer_mac, const void *data, size_t size, fpr_package_id_t package_id);
+esp_err_t fpr_send_opts(fpr_node_t *node, const uint8_t *peer_mac, const void *data, size_t size, const fpr_send_options_t *options);
+esp_err_t fpr_broadcast(fpr_node_t *node, const void *data, size_t size, fpr_package_id_t package_id);
 esp_err_t fpr_send_device_info(fpr_node_t *node, const uint8_t *peer_mac);
 esp_err_t fpr_broadcast_device_info(fpr_node_t *node);
 
 /**
  * @brief Blocking receive from one peer; @p timeout_ms is plain
  *        milliseconds (UINT32_MAX = wait forever).
+ * @return ESP_OK data received, ESP_ERR_TIMEOUT nothing arrived,
+ *         ESP_ERR_NOT_FOUND the peer is gone, ESP_ERR_INVALID_ARG bad
+ *         arguments.
  */
-bool fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data, int data_size, uint32_t timeout_ms);
+esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data, size_t data_size, uint32_t timeout_ms);
 
-void fpr_get_stats(fpr_node_t *node, fpr_stats_t *stats);
-void fpr_reset_stats(fpr_node_t *node);
-size_t fpr_prune_routes(fpr_node_t *node, uint32_t timeout_ms);
-void fpr_print_routes(fpr_node_t *node);
+esp_err_t fpr_get_stats(fpr_node_t *node, fpr_stats_t *stats);
+esp_err_t fpr_reset_stats(fpr_node_t *node);
+/** Remove peers AND extender routes not seen for @p timeout_ms. */
+esp_err_t fpr_prune_stale(fpr_node_t *node, uint32_t timeout_ms, size_t *removed_out);
+/** Log the peer table (name/mac/hops/rssi/age/packets/state). */
+esp_err_t fpr_print_peers(fpr_node_t *node);
 
 esp_err_t fpr_host_set_config(fpr_node_t *node, const fpr_host_config_t *config);
 esp_err_t fpr_host_get_config(fpr_node_t *node, fpr_host_config_t *config);
-size_t fpr_host_peer_count(fpr_node_t *node);
+/** Number of peers in CONNECTED state (not merely discovered). */
+esp_err_t fpr_host_connected_count(fpr_node_t *node, size_t *out);
 esp_err_t fpr_host_approve(fpr_node_t *node, const uint8_t *peer_mac);
 esp_err_t fpr_host_reject(fpr_node_t *node, const uint8_t *peer_mac);
 esp_err_t fpr_host_block(fpr_node_t *node, const uint8_t *peer_mac);
@@ -159,12 +185,13 @@ esp_err_t fpr_host_disconnect(fpr_node_t *node, const uint8_t *peer_mac);
 
 esp_err_t fpr_client_set_config(fpr_node_t *node, const fpr_client_config_t *config);
 esp_err_t fpr_client_get_config(fpr_node_t *node, fpr_client_config_t *config);
-size_t fpr_client_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
+esp_err_t fpr_client_list_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers, size_t *count_out);
 esp_err_t fpr_client_connect(fpr_node_t *node, const uint8_t *peer_mac, uint32_t timeout_ms);
 esp_err_t fpr_client_disconnect(fpr_node_t *node);
-size_t fpr_client_scan(fpr_node_t *node, uint32_t duration_ms);
-bool fpr_client_connected(fpr_node_t *node);
-esp_err_t fpr_client_host_info(fpr_node_t *node, uint8_t *mac_out, char *name_out, size_t name_size);
+esp_err_t fpr_client_scan(fpr_node_t *node, uint32_t duration_ms, size_t *discovered_out);
+esp_err_t fpr_client_connected(fpr_node_t *node, bool *out);
+/** The host this client is (or was most recently) connected to. */
+esp_err_t fpr_client_host(fpr_node_t *node, uint8_t *mac_out, char *name_out, size_t name_size);
 
 /**
  * @brief Advance all periodic node work (discovery loop tick +
@@ -179,7 +206,7 @@ esp_err_t fpr_client_host_info(fpr_node_t *node, uint8_t *mac_out, char *name_ou
  * the *_task variants, which arm too) and disarmed by the matching
  * stop calls or fpr_stop().
  */
-uint32_t fpr_poll(fpr_node_t *node, uint32_t now_ms);
+esp_err_t fpr_poll(fpr_node_t *node, uint32_t now_ms, uint32_t *next_due_ms_out);
 
 /** Arm/disarm periodic work for fpr_poll() (or the node tasks). */
 esp_err_t fpr_start_loop(fpr_node_t *node, uint32_t duration_ms);
@@ -201,10 +228,10 @@ esp_err_t fpr_stop_reconnect(fpr_node_t *node);
 esp_err_t fpr_start_loop_task(fpr_node_t *node, uint32_t duration_ms,
                               const fpr_task_slot_t *slot, bool force_restart);
 esp_err_t fpr_stop_loop_task(fpr_node_t *node);
-bool fpr_loop_task_running(fpr_node_t *node);
+esp_err_t fpr_loop_task_running(fpr_node_t *node, bool *out);
 esp_err_t fpr_start_reconnect_task(fpr_node_t *node, const fpr_task_slot_t *slot);
 esp_err_t fpr_stop_reconnect_task(fpr_node_t *node);
-bool fpr_reconnect_task_running(fpr_node_t *node);
+esp_err_t fpr_reconnect_task_running(fpr_node_t *node, bool *out);
 
 #ifdef __cplusplus
 }

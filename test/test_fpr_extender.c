@@ -79,11 +79,11 @@ static void stats_task(void *pvParameters)
         
         // Show queue depths for all known peers
         fpr_peer_info_t peers[10];
-        size_t count = fpr_list_peers(&s_node, peers, 10);
+        size_t count = ({size_t _v=0;(void)fpr_list_peers(&s_node, peers, 10,&_v);_v;});
         if (count > 0) {
             ESP_LOGI(TAG, "=== Peer Queue Status ===");
             for (size_t i = 0; i < count; i++) {
-                uint32_t q = fpr_peer_queued_packets(&s_node, peers[i].mac);
+                uint32_t q = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, peers[i].mac,&_v);_v;});
                 ESP_LOGI(TAG, "  %s (" MACSTR "): %lu queued, state=%d",
                          peers[i].name, MAC2STR(peers[i].mac), (unsigned long)q, peers[i].state);
             }

@@ -42,10 +42,10 @@
 
 static const char *TAG = "fpr_extender";
 
-static bool _should_forward_packet(fpr_node_t *net, const fpr_package_t *package, bool is_for_me, bool is_broadcast)
+static bool _should_forward_packet(fpr_node_t *node, const fpr_package_t *package, bool is_for_me, bool is_broadcast)
 {
     // Don't forward if we're the origin
-    if (memcmp(package->origin_mac, net->mac, 6) == 0) {
+    if (memcmp(package->origin_mac, node->mac, 6) == 0) {
         return false;
     }
 
@@ -64,21 +64,21 @@ static bool _should_forward_packet(fpr_node_t *net, const fpr_package_t *package
  * packet used to reset hop_count to 0 (TTL never expired), rewrite
  * origin to the extender and dest to the next hop — breaking route
  * learning, replay protection and TTL termination downstream. */
-static esp_err_t _forward_package(fpr_node_t *net, const uint8_t *next_hop, const fpr_package_t *package)
+static esp_err_t _forward_package(fpr_node_t *node, const uint8_t *next_hop, const fpr_package_t *package)
 {
     uint8_t fwd_buf[sizeof(*package)];
     size_t fwd_len = fpr_codec_encode(package, fwd_buf, sizeof(fwd_buf));
-    const fpr_transport_t *t = _transport(net);
+    const fpr_transport_t *t = _transport(node);
     esp_err_t result = fwd_len == 0 ? ESP_ERR_INVALID_SIZE
                        : t == NULL ? ESP_ERR_INVALID_STATE
                        : t->send(t->ctx, next_hop, fwd_buf, fwd_len);
     /* _rx_begin left the lock held; _stats_count_send re-takes it
      * recursively — no implicit "callers must hold" coupling. */
-    _stats_count_send(net, result);
+    _stats_count_send(node, result);
     return result;
 }
 
-void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len)
+void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len)
 {
     #if (FPR_DEBUG_LOG_EXTENDER_DATA_RECEIVE == 1)
     ESP_LOGI(TAG, "Extender received packet - len: %d, from: " MACSTR ", to: " MACSTR,
@@ -90,7 +90,7 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
      * accounting (count_drops) charges rejects to packets_dropped and
      * counts size-valid packets in packets_received. */
     fpr_rx_ctx_t ctx;
-    if (!_rx_begin(net, frame, data, len, true, &ctx)) {
+    if (!_rx_begin(node, frame, data, len, true, &ctx)) {
         return;
     }
     /* Forwarding adjusts hop metadata, not the driver-owned RX buffer. */
@@ -101,7 +101,7 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
     // Update or add peer liveness info — serialize against remove/clear on
     // other tasks (peer stores are heap-owned by the map). The sender is a
     // direct neighbor: its distance is always 1 hop.
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(net, frame->src_mac);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(node, frame->src_mac);
     if (peer) {
         _peer_touch(peer, frame);
         peer->packets_received++;
@@ -110,8 +110,8 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
         }
     } else {
         // Add new peer
-        _peer_add(net, frame->src_mac, NULL, false);
-        peer = _peer_from_map(net, frame->src_mac);
+        _peer_add(node, frame->src_mac, NULL, false);
+        peer = _peer_from_map(node, frame->src_mac);
         if (peer) {
             peer->hop_count = 1;
             _peer_touch(peer, frame);
@@ -121,13 +121,13 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
     /* Learn the route to the ORIGINATOR (not the sender): route[origin]
      * = {next_hop: sender, hops: origin_hop + 1}. Replace only on a
      * strictly better hop count. Self-originated packets teach nothing. */
-    if (memcmp(package->origin_mac, net->mac, 6) != 0) {
-        fpr_route_entry_t *route = hashmap_get(&net->routes_map, package->origin_mac);
+    if (memcmp(package->origin_mac, node->mac, 6) != 0) {
+        fpr_route_entry_t *route = hashmap_get(&node->routes_map, package->origin_mac);
         if (!route) {
             route = heap_caps_calloc(1, sizeof(*route), MALLOC_CAP_DEFAULT);
             if (route) {
                 memcpy(route->dest_mac, package->origin_mac, 6);
-                if (!hashmap_put(&net->routes_map, route->dest_mac, route)) {
+                if (!hashmap_put(&node->routes_map, route->dest_mac, route)) {
                     heap_caps_free(route);
                     route = NULL;
                 }
@@ -147,7 +147,7 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
     }
     
     // Check if this packet is for us
-    bool is_for_me = (memcmp(package->dest_mac, net->mac, 6) == 0);
+    bool is_for_me = (memcmp(package->dest_mac, node->mac, 6) == 0);
     const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
     bool is_broadcast = (memcmp(package->dest_mac, broadcast_mac, 6) == 0);
     
@@ -166,7 +166,7 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
     }
     
     // Forward packet if routing enabled and appropriate
-    if (net->routing_enabled && _should_forward_packet(net, package, is_for_me, is_broadcast)) {
+    if (node->routing_enabled && _should_forward_packet(node, package, is_for_me, is_broadcast)) {
         package->hop_count++;  // Increment hop count on our local copy
 
         // Determine next hop
@@ -177,12 +177,12 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
         } else {
             // Look up the learned route to the final destination
             const fpr_route_entry_t *route =
-                hashmap_get(&net->routes_map, package->dest_mac);
+                hashmap_get(&node->routes_map, package->dest_mac);
             if (route) {
                 next_hop = route->next_hop_mac;
             } else {
                 // Fallback: destination heard directly before routes existed
-                FPR_STORE_HASH_TYPE *dest_peer = _peer_from_map(net, package->dest_mac);
+                FPR_STORE_HASH_TYPE *dest_peer = _peer_from_map(node, package->dest_mac);
                 if (dest_peer && dest_peer->hop_count > 0) {
                     next_hop = dest_peer->next_hop_mac;
                     if (memcmp(next_hop, (const uint8_t[6]){0}, 6) == 0) {
@@ -193,9 +193,9 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
         }
 
         if (next_hop) {
-            esp_err_t err = _forward_package(net, next_hop, package);
+            esp_err_t err = _forward_package(node, next_hop, package);
             if (err == ESP_OK) {
-                net->stats.packets_forwarded++;
+                node->stats.packets_forwarded++;
                 ESP_LOGD(TAG, "Forwarded packet from " MACSTR " to " MACSTR " (hop %d/%d)",
                          MAC2STR(package->origin_mac), MAC2STR(next_hop),
                          package->hop_count, package->max_hops);
@@ -203,8 +203,8 @@ void _rx_extender(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *d
                 ESP_LOGW(TAG, "Failed to forward packet: %s", esp_err_to_name(err));
             }
         } else {
-            net->stats.packets_dropped++;
+            node->stats.packets_dropped++;
         }
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
 }

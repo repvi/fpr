@@ -29,6 +29,7 @@
  */
 
 #include "fpr/fpr_version.h"
+#include "esp_err.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -130,7 +131,7 @@ static inline code_version_t fpr_get_current_version(void)
  * @param buf Buffer to store string (recommend at least 16 bytes)
  * @param buf_size Size of buffer
  */
-void fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_size);
+esp_err_t fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_size);
 
 /**
  * @brief Log compatibility information for debugging

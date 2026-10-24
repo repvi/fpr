@@ -83,7 +83,7 @@ static bool wait_for_data(uint8_t *peer_mac, void *buffer, int size, TickType_t 
     
     while ((xTaskGetTickCount() - start) < timeout_ticks) {
         // Try to get data with sufficient timeout per attempt for fragmented packets
-        bool got_data = fpr_recv_from(&s_node, peer_mac, buffer, size, poll_ms);
+        bool got_data = fpr_recv_from(&s_node, peer_mac, buffer, size, poll_ms)==ESP_OK;
         if (got_data) {
             return true;
         }
@@ -200,9 +200,9 @@ static void client_test_task(void *pvParameters)
     
     // Wait for connection
     while (!is_connected) {
-        if (fpr_client_connected(&s_node)) {
+        if (({bool _v=false;(void)fpr_client_connected(&s_node,&_v);_v;})) {
             is_connected = true;
-            esp_err_t err = fpr_client_host_info(&s_node, peer_mac, NULL, 0);
+            esp_err_t err = fpr_client_host(&s_node, peer_mac, NULL, 0);
             if (err != ESP_OK) {
                 ESP_LOGE(TAG, "[CLIENT] Failed to get host info: %s", esp_err_to_name(err));
                 vTaskDelete(NULL);
@@ -310,7 +310,7 @@ static void host_test_task(void *pvParameters)
     // Continuously poll for incoming data from any connected client
     while (1) {
         // Wait a bit for connection
-        size_t connected = fpr_host_peer_count(&s_node);
+        size_t connected = ({size_t _v=0;(void)fpr_host_connected_count(&s_node,&_v);_v;});
         if (connected == 0) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
@@ -318,7 +318,7 @@ static void host_test_task(void *pvParameters)
         
         // Get list of connected clients
         fpr_peer_info_t peers[5];
-        size_t peer_count = fpr_list_peers(&s_node, peers, 5);
+        size_t peer_count = ({size_t _v=0;(void)fpr_list_peers(&s_node, peers, 5,&_v);_v;});
         
         for (size_t i = 0; i < peer_count; i++) {
             if (peers[i].state != FPR_PEER_STATE_CONNECTED) {
@@ -334,7 +334,7 @@ static void host_test_task(void *pvParameters)
             }
             
             // Poll with configurable timeout to allow fragmented packets to complete
-            bool got_data = fpr_recv_from(&s_node, peers[i].mac, rx_buffer, 1000, test_rx_timeout_ms);
+            bool got_data = fpr_recv_from(&s_node, peers[i].mac, rx_buffer, 1000, test_rx_timeout_ms)==ESP_OK;
             
             if (got_data) {
                 // Extract header

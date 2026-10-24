@@ -29,7 +29,7 @@ extern "C" {
  * @param host_pwk Host's PWK to send
  * @return ESP_OK on success, error code otherwise
  */
-esp_err_t fpr_sec_host_send_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const uint8_t *host_pwk);
+esp_err_t fpr_sec_host_send_pwk(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const uint8_t *host_pwk);
 
 /**
  * @brief Host: Verify client's PWK+LWK and send acknowledgment (Step 3)
@@ -40,7 +40,7 @@ esp_err_t fpr_sec_host_send_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_ST
  * @param host_pwk Host's PWK for verification
  * @return ESP_OK on success, error code otherwise
  */
-esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info, const uint8_t *host_pwk);
+esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info, const uint8_t *host_pwk);
 
 /**
  * @brief Client: Handle PWK received from host (Step 2)
@@ -50,7 +50,7 @@ esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *net, const uint8_t *peer_mac, 
  * @param info Connection info from host (contains PWK)
  * @return ESP_OK on success, error code otherwise
  */
-esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info);
+esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info);
 
 /**
  * @brief Client: Verify acknowledgment from host (Step 4)
@@ -60,7 +60,7 @@ esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *net, const uint8_t *peer_mac, FP
  * @param info Connection info from host (acknowledgment with PWK+LWK)
  * @return ESP_OK on success, error code otherwise
  */
-esp_err_t fpr_sec_client_verify_ack(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info);
+esp_err_t fpr_sec_client_verify_ack(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info);
 
 #ifdef __cplusplus
 }

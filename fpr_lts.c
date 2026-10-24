@@ -30,10 +30,10 @@ static const char *TAG = "fpr_lts";
  * @param buf Buffer to store string
  * @param buf_size Size of buffer
  */
-void fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_size)
+esp_err_t fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_size)
 {
     if (buf == NULL || buf_size == 0) {
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
     
     uint8_t major = CODE_VERSION_MAJOR(version);
@@ -41,6 +41,7 @@ void fpr_lts_version_to_string(code_version_t version, char *buf, size_t buf_siz
     uint8_t patch = CODE_VERSION_PATCH(version);
     
     snprintf(buf, buf_size, "%u.%u.%u", major, minor, patch);
+    return ESP_OK;
 }
 
 /**

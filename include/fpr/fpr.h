@@ -63,7 +63,7 @@ code_version_t fpr_get_protocol_version(void);
  * @param buf Buffer to store version string (e.g., "1.0.0").
  * @param buf_size Size of the buffer.
  */
-void fpr_get_protocol_version_string(char *buf, size_t buf_size);
+esp_err_t fpr_get_protocol_version_string(char *buf, size_t buf_size);
 
 #ifdef __cplusplus
 }

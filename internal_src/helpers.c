@@ -19,7 +19,7 @@ static const char *TAG = "fpr_helpers";
 /* Returns true when the packet should be enqueued/callbacked, false when
  * the queue-mode policy dropped it. Callers must honor the return: the
  * drops counted here previously still reached the queue. */
-static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, const uint8_t *peer_address)
+static bool _store_data_with_mode(fpr_node_t *node, FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, const uint8_t *peer_address)
 {
     // Determine packet type characteristics
     bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);
@@ -43,7 +43,7 @@ static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, c
                      " (type=%d). Use NORMAL mode for large data.",
                      MAC2STR(peer_address), data->package_type);
             #endif
-            net->stats.packets_dropped++;
+            node->stats.packets_dropped++;
             // Reset any partial fragment state
             store->receiving_fragmented = false;
             store->fragment_seq_num = 0;
@@ -60,7 +60,7 @@ static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, c
             }
             store->queued_packets = 0;
             if (dropped > 0) {
-                net->stats.packets_dropped += dropped;
+                node->stats.packets_dropped += dropped;
             }
         }
     } else if (!is_control_packet) {
@@ -77,7 +77,7 @@ static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, c
                 while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
                     // Check if this was part of old incomplete sequence
                     if (discard_pkg.sequence_num == store->fragment_seq_num) {
-                        net->stats.packets_dropped++;
+                        node->stats.packets_dropped++;
                     } else {
                         // This was a complete packet, put it back (shouldn't happen often)
                         xQueueSendToFront(store->response_queue, &discard_pkg, 0);
@@ -96,7 +96,7 @@ static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, c
                          MAC2STR(peer_address), (unsigned long)store->fragment_seq_num,
                          (unsigned long)data->sequence_num);
                 #endif
-                net->stats.packets_dropped++;
+                node->stats.packets_dropped++;
                 return false;
             }
             if (is_fragment_end) {
@@ -109,15 +109,15 @@ static bool _store_data_with_mode(fpr_node_t *net, FPR_STORE_HASH_TYPE *store, c
     return true;
 }
 
-void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_package_t *data)
+void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_package_t *data)
 {
-    net->stats.packets_received++;
+    node->stats.packets_received++;
     const uint8_t *peer_address = frame->src_mac;
     /* Recursive: callers in the RX path already hold peers_lock, and the
      * on_data callback below may call fpr_remove_peer() which takes
      * it again on this same task. */
-    _peers_lock(net);
-    FPR_STORE_HASH_TYPE *store = _peer_from_map(net, peer_address);
+    _peers_lock(node);
+    FPR_STORE_HASH_TYPE *store = _peer_from_map(node, peer_address);
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
         _peer_touch(store, frame);
@@ -134,13 +134,13 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
             bool is_fragment_resend = (seq_diff == 0) && store->receiving_fragmented;
             if (!is_newer && !is_fragment_resend) {
                 // Potential replay attack - drop packet with old sequence
-                net->stats.replay_attacks_blocked++;
+                node->stats.replay_attacks_blocked++;
                 #if (FPR_DEBUG == 1)
                 ESP_LOGW(TAG, "Replay attack blocked from " MACSTR " (seq %lu, last %lu)",
                          MAC2STR(peer_address), (unsigned long)data->sequence_num,
                          (unsigned long)store->last_seq_num);
                 #endif
-                _peers_unlock(net);
+                _peers_unlock(node);
                 return;
             }
 
@@ -156,7 +156,7 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
         // the application queue or the data callback.
         bool is_control_packet = (data->id == FPR_PACKET_ID_CONTROL);
         if (is_control_packet) {
-            _peers_unlock(net);
+            _peers_unlock(node);
             return;
         }
 
@@ -165,8 +165,8 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
                                    data->package_type == FPR_PACKAGE_TYPE_END);
 
         // Queue-mode policy may drop the packet (counted already).
-        if (!_store_data_with_mode(net, store, data, peer_address)) {
-            _peers_unlock(net);
+        if (!_store_data_with_mode(node, store, data, peer_address)) {
+            _peers_unlock(node);
             return;
         }
         
@@ -178,7 +178,7 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
             }
         } else {
             // Queue full - increment dropped counter
-            net->stats.packets_dropped++;
+            node->stats.packets_dropped++;
             #if (FPR_DEBUG == 1)
             ESP_LOGW(TAG, "Queue full, packet dropped from " MACSTR, MAC2STR(peer_address));
             #endif
@@ -186,41 +186,41 @@ void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_pa
 
         /* Finish every store/queue access before invoking application
          * code: a callback may remove this peer or clear the peer map. */
-        if (net->callbacks.on_data) {
+        if (node->callbacks.on_data) {
             fpr_package_t *package = (fpr_package_t *)data;
             const size_t cap = sizeof(package->protocol);
             int data_len = (int)((data->payload_size > 0 && data->payload_size <= cap)
                                  ? data->payload_size : cap);
-            _cb_data(net, peer_address, &package->protocol, data_len);
+            _cb_data(node, peer_address, &package->protocol, data_len);
         }
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
 }
 
-esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, bool is_connected)
+esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name, bool is_connected)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    _peers_lock(net);
+    _peers_lock(node);
     /* Quiesce gate: fpr_deinit flips state to UNINITIALIZED
      * before emptying the maps — a callback still in flight from before
      * esp_now_deinit must not repopulate what teardown just cleared.
      * Every other state (INITIALIZED/STARTED/PAUSED/STOPPED) keeps the
      * maps live and may add peers. */
-    if (net->state == FPR_STATE_UNINITIALIZED) {
-        _peers_unlock(net);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
+        _peers_unlock(node);
         return ESP_ERR_INVALID_STATE;
     }
     /* hashmap_put replaces values but keeps the original key pointer.
      * Replacing an owned store would leak it and its response queue. */
-    if (_peer_from_map(net, peer_mac) != NULL) {
-        _peers_unlock(net);
+    if (_peer_from_map(node, peer_mac) != NULL) {
+        _peers_unlock(node);
         ESP_LOGE(TAG, "Peer already exists");
         return ESP_ERR_INVALID_STATE;
     }
 
     FPR_STORE_HASH_TYPE *store = (FPR_STORE_HASH_TYPE *)heap_caps_calloc(1, sizeof(FPR_STORE_HASH_TYPE), MALLOC_CAP_DEFAULT);
     if (!store) {
-        _peers_unlock(net);
+        _peers_unlock(node);
         ESP_LOGE(TAG, "Failed to allocate peer store");
         return ESP_ERR_NO_MEM;
     }
@@ -229,7 +229,7 @@ esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, 
     store->response_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
     if (!store->response_queue) {
         _peer_store_free_or_defer(store);
-        _peers_unlock(net);
+        _peers_unlock(node);
         return ESP_ERR_NO_MEM;
     }
     
@@ -245,7 +245,7 @@ esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, 
     store->rssi = 0;
     store->packets_received = 0;
     store->queued_packets = 0;
-    store->queue_mode = net->default_queue_mode;
+    store->queue_mode = node->default_queue_mode;
     store->receiving_fragmented = false;
     store->fragment_seq_num = 0;
     
@@ -253,32 +253,32 @@ esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, 
     // outlive the caller's buffer.
     memcpy(store->mac, peer_mac, MAC_ADDRESS_LENGTH);
 
-    bool success = hashmap_put(&net->peers_map, store->mac, store);
+    bool success = hashmap_put(&node->peers_map, store->mac, store);
     if (success) {
-        const fpr_transport_t *t = _transport(net);
+        const fpr_transport_t *t = _transport(node);
         esp_err_t err = t ? t->add_peer(t->ctx, store->mac, 0, false)
                           : ESP_ERR_INVALID_STATE;
         if (err != ESP_OK) {
-            hashmap_remove(&net->peers_map, store->mac);
+            hashmap_remove(&node->peers_map, store->mac);
             _peer_store_free_or_defer(store);
-            _peers_unlock(net);
+            _peers_unlock(node);
             return err;
         }
-        _peers_unlock(net);
+        _peers_unlock(node);
         return ESP_OK;
     }
     else {
         _peer_store_free_or_defer(store);
-        _peers_unlock(net);
+        _peers_unlock(node);
         return ESP_FAIL;
     }
 }
 
 // used by multiple modes
-esp_err_t _peer_add_discovered(fpr_node_t *net, const char *name, const uint8_t *address, bool is_connected)
+esp_err_t _peer_add_discovered(fpr_node_t *node, const char *name, const uint8_t *address, bool is_connected)
 {
     ESP_RETURN_ON_FALSE(name != NULL && address != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
-    return _peer_add(net, address, name, is_connected);
+    return _peer_add(node, address, name, is_connected);
 }
 
 // Helper: Copy peer data to info structure
@@ -295,25 +295,25 @@ void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
 }
 // ========== PEER STORE / MAP OPERATIONS ==========
 
-esp_err_t _peer_remove(fpr_node_t *net, const uint8_t *peer_mac)
+esp_err_t _peer_remove(fpr_node_t *node, const uint8_t *peer_mac)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
-    _peers_lock(net);
+    _peers_lock(node);
     /* The map key may point inside the store we are about to release. */
     uint8_t mac[MAC_ADDRESS_LENGTH];
     memcpy(mac, peer_mac, sizeof(mac));
-    FPR_STORE_HASH_TYPE *var = _peer_from_map(net, mac);
+    FPR_STORE_HASH_TYPE *var = _peer_from_map(node, mac);
     esp_err_t result;
     if (var != NULL) {
-        if (!hashmap_remove(&net->peers_map, mac)) {
-            _peers_unlock(net);
+        if (!hashmap_remove(&node->peers_map, mac)) {
+            _peers_unlock(node);
             return ESP_FAIL;
         }
         _peer_store_free_or_defer(var);
     }
-    const fpr_transport_t *t = _transport(net);
+    const fpr_transport_t *t = _transport(node);
     result = t ? t->del_peer(t->ctx, mac) : ESP_ERR_INVALID_STATE;
-    _peers_unlock(net);
+    _peers_unlock(node);
     return result;
 }
 

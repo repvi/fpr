@@ -133,7 +133,7 @@ Functions for managing network state and controlling pause/resume functionality.
 Get the current network state.
 
 ```c
-fpr_state_t fpr_get_state(fpr_node_t *node);
+esp_err_t fpr_get_state(fpr_node_t *node, fpr_state_t *out);
 ```
 
 **Returns:**
@@ -209,7 +209,7 @@ Functions for setting and querying the network operating mode.
 Set the network operating mode.
 
 ```c
-void fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode);
+esp_err_t fpr_set_mode(fpr_node_t *node, fpr_mode_type_t mode);
 ```
 
 **Parameters:**
@@ -238,7 +238,7 @@ fpr_start(node);
 Get the current network operating mode.
 
 ```c
-fpr_mode_type_t fpr_get_mode(fpr_node_t *node);
+esp_err_t fpr_get_mode(fpr_node_t *node, fpr_mode_type_t *out);
 ```
 
 **Returns:**
@@ -305,7 +305,7 @@ esp_err_t fpr_stop_loop_task(fpr_node_t *node);
 Check if the loop task is currently running.
 
 ```c
-bool fpr_loop_task_running(fpr_node_t *node);
+esp_err_t fpr_loop_task_running(fpr_node_t *node, bool *out);
 ```
 
 **Returns:**
@@ -356,7 +356,7 @@ esp_err_t fpr_stop_reconnect_task(fpr_node_t *node);
 Check if the reconnect task is running.
 
 ```c
-bool fpr_reconnect_task_running(fpr_node_t *node);
+esp_err_t fpr_reconnect_task_running(fpr_node_t *node, bool *out);
 ```
 
 **Returns:**
@@ -535,7 +535,7 @@ fpr_set_callbacks(node, &(fpr_node_callbacks_t){ .on_data = on_data_received });
 Wait for and retrieve data from a specific peer (blocking).
 
 ```c
-bool fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data, int data_size, uint32_t timeout_ms);
+esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data, size_t data_size, uint32_t timeout_ms);
 ```
 
 **Parameters:**
@@ -600,7 +600,7 @@ esp_err_t fpr_remove_peer(fpr_node_t *node, uint8_t *peer_mac);
 Get the number of discovered peers.
 
 ```c
-int fpr_peer_count(fpr_node_t *node);
+esp_err_t fpr_peer_count(fpr_node_t *node, size_t *out);
 ```
 
 **Returns:**
@@ -608,12 +608,12 @@ int fpr_peer_count(fpr_node_t *node);
 
 ---
 
-### `fpr_peer_by_name()`
+### `fpr_peer_find()`
 
 Find a peer by name.
 
 ```c
-esp_err_t fpr_peer_by_name(fpr_node_t *node, const char *peer_name, uint8_t *mac_out);
+esp_err_t fpr_peer_find(fpr_node_t *node, const char *peer_name, uint8_t *mac_out);
 ```
 
 **Parameters:**
@@ -628,7 +628,7 @@ esp_err_t fpr_peer_by_name(fpr_node_t *node, const char *peer_name, uint8_t *mac
 **Example:**
 ```c
 uint8_t peer_mac[6];
-if (fpr_peer_by_name(node, "Device-123", peer_mac) == ESP_OK) {
+if (fpr_peer_find(node, "Device-123", peer_mac) == ESP_OK) {
     fpr_send(node, peer_mac, data, size, 1);
 }
 ```
@@ -659,12 +659,12 @@ fpr_clear_peers(node);
 
 ---
 
-### `fpr_peer_reachable()`
+### `fpr_peer_ping()`
 
 Check if a specific peer is currently reachable.
 
 ```c
-bool fpr_peer_reachable(fpr_node_t *node, uint8_t *peer_mac, uint32_t timeout_ms);
+bool fpr_peer_ping(fpr_node_t *node, uint8_t *peer_mac, uint32_t timeout_ms);
 ```
 
 **Parameters:**
@@ -683,7 +683,7 @@ bool fpr_peer_reachable(fpr_node_t *node, uint8_t *peer_mac, uint32_t timeout_ms
 **Example:**
 ```c
 uint8_t peer_mac[6] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
-if (fpr_peer_reachable(node, peer_mac, 1000)) {
+if (fpr_peer_ping(node, peer_mac, 1000)) {
     printf("Peer is alive!\n");
 } else {
     printf("Peer is unreachable\n");
@@ -697,11 +697,11 @@ if (fpr_peer_reachable(node, peer_mac, 1000)) {
 Iterate through all known peers with a callback.
 
 ```c
-size_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user);
+esp_err_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user, size_t *visited_out);
 ```
 
 **Parameters:**
-- `callback` - `void (*)(void *user, const uint8_t *peer_mac, void *peer)` — `peer` is the internal store (opaque); use `fpr_peer_info()` for details
+- `callback` - `void (*)(void *user, const uint8_t *peer_mac, void *peer)` — `peer` is the internal store (opaque); use `fpr_peer_lookup()` for details
 - `user` - Arbitrary user context passed to the callback
 
 **Returns:**
@@ -709,12 +709,12 @@ size_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user);
 
 ---
 
-### `fpr_peer_info()`
+### `fpr_peer_lookup()`
 
 Get detailed information about a specific peer.
 
 ```c
-esp_err_t fpr_peer_info(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_info_t *info);
+esp_err_t fpr_peer_lookup(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_info_t *info);
 ```
 
 **Parameters:**
@@ -746,7 +746,7 @@ typedef struct {
 List all discovered peers.
 
 ```c
-size_t fpr_list_peers(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
+esp_err_t fpr_list_peers(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers, size_t *count_out);
 ```
 
 **Parameters:**
@@ -773,7 +773,7 @@ for (size_t i = 0; i < count; i++) {
 Set network visibility/permission state.
 
 ```c
-void fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
+esp_err_t fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
 ```
 
 **Parameters:**
@@ -791,7 +791,7 @@ void fpr_set_visibility(fpr_node_t *node, fpr_visibility_t state);
 Get current network visibility/permission state.
 
 ```c
-fpr_visibility_t fpr_get_visibility(fpr_node_t *node);
+esp_err_t fpr_get_visibility(fpr_node_t *node, fpr_visibility_t *out);
 ```
 
 **Returns:**
@@ -857,7 +857,7 @@ esp_err_t fpr_client_get_config(fpr_node_t *node, fpr_client_config_t *config);
 Check if client is connected to a host.
 
 ```c
-bool fpr_client_connected(fpr_node_t *node);
+esp_err_t fpr_client_connected(fpr_node_t *node, bool *out);
 ```
 
 **Returns:**
@@ -866,12 +866,12 @@ bool fpr_client_connected(fpr_node_t *node);
 
 ---
 
-### `fpr_client_host_info()`
+### `fpr_client_host()`
 
 Get information about the connected host.
 
 ```c
-esp_err_t fpr_client_host_info(fpr_node_t *node, uint8_t *mac_out, char *name_out, size_t name_size);
+esp_err_t fpr_client_host(fpr_node_t *node, uint8_t *mac_out, char *name_out, size_t name_size);
 ```
 
 **Parameters:**
@@ -885,12 +885,12 @@ esp_err_t fpr_client_host_info(fpr_node_t *node, uint8_t *mac_out, char *name_ou
 
 ---
 
-### `fpr_client_hosts()`
+### `fpr_client_list_hosts()`
 
 List all discovered hosts available for connection.
 
 ```c
-size_t fpr_client_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
+size_t fpr_client_list_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t max_peers);
 ```
 
 **Parameters:**
@@ -907,7 +907,7 @@ size_t fpr_client_hosts(fpr_node_t *node, fpr_peer_info_t *peer_array, size_t ma
 Start scanning for available hosts without connecting.
 
 ```c
-size_t fpr_client_scan(fpr_node_t *node, uint32_t duration_ms);
+esp_err_t fpr_client_scan(fpr_node_t *node, uint32_t duration_ms, size_t *discovered_out);
 ```
 
 **Parameters:**
@@ -1016,12 +1016,12 @@ esp_err_t fpr_host_get_config(fpr_node_t *node, fpr_host_config_t *config);
 
 ---
 
-### `fpr_host_peer_count()`
+### `fpr_host_connected_count()`
 
 Get count of connected peers.
 
 ```c
-size_t fpr_host_peer_count(fpr_node_t *node);
+size_t fpr_host_connected_count(fpr_node_t *node);
 ```
 
 **Returns:**
@@ -1124,12 +1124,12 @@ esp_err_t fpr_host_disconnect(fpr_node_t *node, uint8_t *peer_mac);
 
 Functions for querying network state and information.
 
-### `fpr_prune_routes()`
+### `fpr_prune_stale()`
 
 Remove stale routes from the routing table.
 
 ```c
-size_t fpr_prune_routes(fpr_node_t *node, uint32_t timeout_ms);
+esp_err_t fpr_prune_stale(fpr_node_t *node, uint32_t timeout_ms, size_t *removed_out);
 ```
 
 **Parameters:**
@@ -1141,18 +1141,18 @@ size_t fpr_prune_routes(fpr_node_t *node, uint32_t timeout_ms);
 **Example:**
 ```c
 // Remove routes older than 30 seconds
-size_t removed = fpr_prune_routes(node, 30000);
+size_t removed = fpr_prune_stale(node, 30000);
 printf("Removed %zu stale routes\n", removed);
 ```
 
 ---
 
-### `fpr_print_routes()`
+### `fpr_print_peers()`
 
 Print the routing table to log for debugging.
 
 ```c
-void fpr_print_routes(fpr_node_t *node);
+esp_err_t fpr_print_peers(fpr_node_t *node);
 ```
 
 **Notes:**
@@ -1170,7 +1170,7 @@ Functions for collecting network statistics and diagnostics.
 Get network statistics.
 
 ```c
-void fpr_get_stats(fpr_node_t *node, fpr_stats_t *stats);
+esp_err_t fpr_get_stats(fpr_node_t *node, fpr_stats_t *stats);
 ```
 
 **Parameters:**
@@ -1203,7 +1203,7 @@ printf("Sent: %lu, Received: %lu, Dropped: %lu\n",
 Reset all network statistics counters to zero.
 
 ```c
-void fpr_reset_stats(fpr_node_t *node);
+esp_err_t fpr_reset_stats(fpr_node_t *node);
 ```
 
 ---

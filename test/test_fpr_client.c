@@ -95,7 +95,7 @@ static void client_on_data_received(void *user, const uint8_t *peer_addr, void *
     
     // Update last_seen timestamp by getting peer info (triggers internal update)
     fpr_peer_info_t peer_info;
-    if (fpr_peer_info(&s_node, src_mac, &peer_info) == ESP_OK) {
+    if (fpr_peer_lookup(&s_node, src_mac, &peer_info) == ESP_OK) {
         ESP_LOGD(TAG, "[DATA] Host %s last seen: %llu ms ago", peer_info.name, peer_info.last_seen_ms);
     }
     
@@ -121,14 +121,14 @@ static void client_on_data_received(void *user, const uint8_t *peer_addr, void *
 static void send_test_message(void)
 {
     // Check connection status immediately before sending
-    bool currently_connected = fpr_client_connected(&s_node);
+    bool currently_connected = ({bool _v=false;(void)fpr_client_connected(&s_node,&_v);_v;});
     if (!currently_connected) {
         ESP_LOGW(TAG, "[SEND] Not connected to any host, skipping message send");
         return;
     }
     
     // Get current host MAC (in case it changed or wasn't set yet)
-    esp_err_t info_err = fpr_client_host_info(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
+    esp_err_t info_err = fpr_client_host(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
     if (info_err != ESP_OK) {
         ESP_LOGE(TAG, "[SEND] Failed to get host info: %s", esp_err_to_name(info_err));
         return;
@@ -165,7 +165,7 @@ static void client_loop_task(void *pvParameters)
     }
     
     // Wait for loop to complete
-    while (fpr_loop_task_running(&s_node)) {
+    while (({bool _v=false;(void)fpr_loop_task_running(&s_node,&_v);_v;})) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     
@@ -181,10 +181,10 @@ static void client_loop_task(void *pvParameters)
     }
     
     // Check if connected
-    is_connected = fpr_client_connected(&s_node);
+    is_connected = ({bool _v=false;(void)fpr_client_connected(&s_node,&_v);_v;});
     if (is_connected) {
         successful_connections++;
-        esp_err_t info_err = fpr_client_host_info(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
+        esp_err_t info_err = fpr_client_host(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
         if (info_err == ESP_OK) {
             ESP_LOGI(TAG, "[LOOP] Successfully connected to host: %s (" MACSTR ")", 
                      connected_host_name, MAC2STR(connected_host_mac));
@@ -200,7 +200,7 @@ static void client_loop_task(void *pvParameters)
         if (is_connected) {
             // Try to receive data from host
             uint8_t buffer[200];
-            if (fpr_recv_from(&s_node, connected_host_mac, buffer, 200, 1000)) {
+            if (fpr_recv_from(&s_node, connected_host_mac, buffer, 200, 1000)==ESP_OK) {
                 messages_received++;
                 ESP_LOGI(TAG, "[RECEIVE] Got data from host: %s", (char*)buffer);
             }
@@ -241,7 +241,7 @@ static void stats_task(void *pvParameters)
         vTaskDelayUntil(&last_wake, 1000); // Every 1 second - check connection frequently
         
         // Update connection status frequently for fast reconnection
-        bool currently_connected = fpr_client_connected(&s_node);
+        bool currently_connected = ({bool _v=false;(void)fpr_client_connected(&s_node,&_v);_v;});
         
         // Detect connection state changes
         if (currently_connected && !was_connected) {
@@ -274,10 +274,10 @@ static void stats_task(void *pvParameters)
             // Get host info
             uint8_t host_mac[6];
             char host_name[32];
-            if (fpr_client_host_info(&s_node, host_mac, host_name, sizeof(host_name)) == ESP_OK) {
+            if (fpr_client_host(&s_node, host_mac, host_name, sizeof(host_name)) == ESP_OK) {
                 ESP_LOGI(TAG, "Verified: %s", host_name);
                 // Show queued packets count
-                uint32_t queued = fpr_peer_queued_packets(&s_node, host_mac);
+                uint32_t queued = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, host_mac,&_v);_v;});
                 ESP_LOGI(TAG, "Queued packets from host: %lu", (unsigned long)queued);
             }
         }
@@ -372,7 +372,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
     const int MSGS_PER_TEST = 5;
     
     uint8_t host_mac[6];
-    if (fpr_client_host_info(&s_node, host_mac, NULL, 0) != ESP_OK) {
+    if (fpr_client_host(&s_node, host_mac, NULL, 0) != ESP_OK) {
         ESP_LOGE(TAG, "Cannot get host MAC for queue test");
         vTaskDelete(NULL);
         return;
@@ -416,7 +416,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             
             fpr_stats_t stats_after;
             fpr_get_stats(&s_node, &stats_after);
-            uint32_t queued = fpr_peer_queued_packets(&s_node, host_mac);
+            uint32_t queued = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, host_mac,&_v);_v;});
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
             
             ESP_LOGI(TAG, "   Result: queued=%lu, dropped=%lu", (unsigned long)queued, (unsigned long)dropped);
@@ -432,7 +432,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             
             // Drain queue
             uint8_t buffer[200];
-            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50));
+            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50)==ESP_OK);
         }
     }
     
@@ -474,7 +474,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             
             fpr_stats_t stats_after;
             fpr_get_stats(&s_node, &stats_after);
-            uint32_t queued = fpr_peer_queued_packets(&s_node, host_mac);
+            uint32_t queued = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, host_mac,&_v);_v;});
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
             
             ESP_LOGI(TAG, "   Result: queued=%lu, dropped=%lu", (unsigned long)queued, (unsigned long)dropped);
@@ -491,7 +491,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             // Drain queue
             uint8_t buffer[200];
             int consumed = 0;
-            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50)) {
+            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50)==ESP_OK) {
                 consumed++;
             }
             ESP_LOGI(TAG, "   Consumed %d messages (expect 1 in LATEST_ONLY)", consumed);
@@ -536,7 +536,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             
             fpr_stats_t stats_after;
             fpr_get_stats(&s_node, &stats_after);
-            uint32_t queued = fpr_peer_queued_packets(&s_node, host_mac);
+            uint32_t queued = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, host_mac,&_v);_v;});
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
             
             ESP_LOGI(TAG, "   Result: queued=%lu, dropped=%lu", (unsigned long)queued, (unsigned long)dropped);
@@ -551,7 +551,7 @@ static void queue_mode_stress_test_task(void *pvParameters)
             
             // Drain queue
             uint8_t buffer[200];
-            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50));
+            while (fpr_recv_from(&s_node, host_mac, buffer, sizeof(buffer), 50)==ESP_OK);
         }
     }
     
@@ -657,9 +657,9 @@ esp_err_t fpr_client_test_start(const fpr_client_test_config_t *config)
     ESP_LOGI(TAG, "Mode set to CLIENT");
     
     // Check connection status periodically
-    is_connected = fpr_client_connected(&s_node);
+    is_connected = ({bool _v=false;(void)fpr_client_connected(&s_node,&_v);_v;});
     if (is_connected) {
-        esp_err_t info_err = fpr_client_host_info(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
+        esp_err_t info_err = fpr_client_host(&s_node, connected_host_mac, connected_host_name, sizeof(connected_host_name));
         if (info_err == ESP_OK) {
             successful_connections++;
             ESP_LOGI(TAG, "[CONNECT] Already connected to: %s (" MACSTR ")", connected_host_name, MAC2STR(connected_host_mac));

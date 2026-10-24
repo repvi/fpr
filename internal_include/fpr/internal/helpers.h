@@ -28,9 +28,12 @@ static inline void _safe_string_copy(char *dest, const char *src, size_t dest_si
 }
 
 // Helper: Get peer from hashmap with type cast
-static inline FPR_STORE_HASH_TYPE *_peer_from_map(fpr_node_t *net, const uint8_t *peer_mac)
+static inline FPR_STORE_HASH_TYPE *_peer_from_map(fpr_node_t *node, const uint8_t *peer_mac)
 {
-    return (FPR_STORE_HASH_TYPE *)hashmap_get(&net->peers_map, peer_mac);
+    if (node == NULL || peer_mac == NULL) {
+        return NULL;
+    }
+    return (FPR_STORE_HASH_TYPE *)hashmap_get(&node->peers_map, peer_mac);
 }
 
 /* Transports that cannot measure RSSI report 0 ("unknown"). */
@@ -49,9 +52,9 @@ static inline void _peer_touch(FPR_STORE_HASH_TYPE *peer, const fpr_rx_frame_t *
 }
 
 // Helper: Get interval adjusted for power mode
-static inline uint32_t _power_interval(fpr_node_t *net, uint32_t base_interval_ms)
+static inline uint32_t _power_interval(fpr_node_t *node, uint32_t base_interval_ms)
 {
-    if (net->power_mode == FPR_POWER_LOW) {
+    if (node->power_mode == FPR_POWER_LOW) {
         if (base_interval_ms > UINT32_MAX / FPR_LOW_POWER_MULTIPLIER) {
             return UINT32_MAX;
         }
@@ -84,24 +87,24 @@ static inline void fpr_set_peer_info(fpr_wire_peer_info_t *gen_info)
     gen_info->ifidx = 0;       // STA (wire value; not a driver ifidx)
 }
 
-/* Serialize access to net->peers_map and the peer stores it owns.
+/* Serialize access to node->peers_map and the peer stores it owns.
  * ESP-NOW RX callbacks (WiFi task), the loop/reconnect tasks and
  * application calls all reach the map; without this a concurrent remove
  * can free a store another context is using. The lock is recursive so
  * callbacks invoked while a caller holds it (on_data calling
  * fpr_remove_peer, request_cb calling fpr_host_approve)
  * re-enter safely on the same task. */
-static inline void _peers_lock(fpr_node_t *net)
+static inline void _peers_lock(fpr_node_t *node)
 {
-    if (net->peers_lock != NULL) {
-        xSemaphoreTakeRecursive(net->peers_lock, portMAX_DELAY);
+    if (node->peers_lock != NULL) {
+        xSemaphoreTakeRecursive(node->peers_lock, portMAX_DELAY);
     }
 }
 
-static inline void _peers_unlock(fpr_node_t *net)
+static inline void _peers_unlock(fpr_node_t *node)
 {
-    if (net->peers_lock != NULL) {
-        xSemaphoreGiveRecursive(net->peers_lock);
+    if (node->peers_lock != NULL) {
+        xSemaphoreGiveRecursive(node->peers_lock);
     }
 }
 
@@ -109,34 +112,34 @@ static inline void _peers_unlock(fpr_node_t *net)
  * lock → _peer_from_map → NULL-check preamble. The caller MUST
  * _peers_unlock() on every path, including NULL (the helper leaves
  * the lock held either way). */
-static inline FPR_STORE_HASH_TYPE *_peer_lookup_locked(fpr_node_t *net, const uint8_t *peer_mac)
+static inline FPR_STORE_HASH_TYPE *_peer_lookup_locked(fpr_node_t *node, const uint8_t *peer_mac)
 {
-    _peers_lock(net);
-    return _peer_from_map(net, peer_mac);
+    _peers_lock(node);
+    return _peer_from_map(node, peer_mac);
 }
 
 /* Snapshot the radio port. Teardown memsets the node without holding
- * the lock, so a bare net->transport->op() can dereference NULL
+ * the lock, so a bare node->transport->op() can dereference NULL
  * mid-teardown — but every transport vtable is a static const, so a
  * captured non-NULL pointer stays callable even while the node is
  * being zeroed. Callers still NULL-check the snapshot. */
-static inline const fpr_transport_t *_transport(fpr_node_t *net)
+static inline const fpr_transport_t *_transport(fpr_node_t *node)
 {
-    return net->transport;
+    return node->transport;
 }
 
 /* Count one transport send() outcome under peers_lock. Safe to call while
  * already holding the lock (it is recursive) — the extender path counts
  * from inside the RX critical section. */
-static inline void _stats_count_send(fpr_node_t *net, esp_err_t err)
+static inline void _stats_count_send(fpr_node_t *node, esp_err_t err)
 {
-    _peers_lock(net);
+    _peers_lock(node);
     if (err == ESP_OK) {
-        net->stats.packets_sent++;
+        node->stats.packets_sent++;
     } else {
-        net->stats.send_failures++;
+        node->stats.send_failures++;
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
 }
 
 /* Free-or-defer for a store already detached (or being detached) from
@@ -165,28 +168,28 @@ static inline void _peer_store_free_or_defer(FPR_STORE_HASH_TYPE *peer)
  * so a caller may block on the queue without holding the peers lock —
  * holding it would starve the RX path that fills the queue. Pair every
  * acquire with _peer_store_release(). */
-static inline FPR_STORE_HASH_TYPE *_peer_store_acquire(fpr_node_t *net, const uint8_t *mac)
+static inline FPR_STORE_HASH_TYPE *_peer_store_acquire(fpr_node_t *node, const uint8_t *mac)
 {
     if (!mac) {
         return NULL;
     }
-    _peers_lock(net);
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(net, mac);
+    _peers_lock(node);
+    FPR_STORE_HASH_TYPE *peer = _peer_from_map(node, mac);
     if (peer) {
         peer->refcount++;
     }
-    _peers_unlock(net);
+    _peers_unlock(node);
     return peer;
 }
 
-static inline void _peer_store_release(fpr_node_t *net, FPR_STORE_HASH_TYPE *peer)
+static inline void _peer_store_release(fpr_node_t *node, FPR_STORE_HASH_TYPE *peer)
 {
     if (!peer) {
         return;
     }
-    _peers_lock(net);
+    _peers_lock(node);
     bool free_now = (--peer->refcount == 0 && peer->dead);
-    _peers_unlock(net);
+    _peers_unlock(node);
     if (free_now) {
         if (peer->response_queue != NULL) {
             vQueueDelete(peer->response_queue);
@@ -218,51 +221,51 @@ static inline void _peer_clear_session(FPR_STORE_HASH_TYPE *peer)
  * fpr_node_config_t wins; the ctx-less config field is the fallback
  * so fpr_*_set_config()/fpr_set_callbacks() callers behave
  * identically. */
-static inline void _cb_peer_discovered(fpr_node_t *net, const uint8_t *mac,
+static inline void _cb_peer_discovered(fpr_node_t *node, const uint8_t *mac,
                                        const char *name, int8_t rssi)
 {
-    if (net->callbacks.on_peer_discovered) {
-        net->callbacks.on_peer_discovered(net->callbacks.user, mac, name, rssi);
-    } else if (net->client_config.discovery_cb) {
-        net->client_config.discovery_cb(mac, name, rssi);
+    if (node->callbacks.on_peer_discovered) {
+        node->callbacks.on_peer_discovered(node->callbacks.user, mac, name, rssi);
+    } else if (node->client_config.discovery_cb) {
+        node->client_config.discovery_cb(mac, name, rssi);
     }
 }
 
-static inline bool _cb_has_host_select(const fpr_node_t *net)
+static inline bool _cb_has_host_select(const fpr_node_t *node)
 {
-    return net->callbacks.on_host_selection || net->client_config.selection_cb;
+    return node->callbacks.on_host_selection || node->client_config.selection_cb;
 }
 
-static inline bool _cb_host_select(fpr_node_t *net, const uint8_t *mac,
+static inline bool _cb_host_select(fpr_node_t *node, const uint8_t *mac,
                                    const char *name, int8_t rssi)
 {
-    if (net->callbacks.on_host_selection) {
-        return net->callbacks.on_host_selection(net->callbacks.user, mac, name, rssi);
+    if (node->callbacks.on_host_selection) {
+        return node->callbacks.on_host_selection(node->callbacks.user, mac, name, rssi);
     }
-    return net->client_config.selection_cb(mac, name, rssi);
+    return node->client_config.selection_cb(mac, name, rssi);
 }
 
-static inline bool _cb_has_conn_request(const fpr_node_t *net)
+static inline bool _cb_has_conn_request(const fpr_node_t *node)
 {
-    return net->callbacks.on_connection_request || net->host_config.request_cb;
+    return node->callbacks.on_connection_request || node->host_config.request_cb;
 }
 
-static inline bool _cb_conn_request(fpr_node_t *net, const uint8_t *mac,
+static inline bool _cb_conn_request(fpr_node_t *node, const uint8_t *mac,
                                     const char *name, uint32_t key)
 {
-    if (net->callbacks.on_connection_request) {
-        return net->callbacks.on_connection_request(net->callbacks.user, mac, name, key);
+    if (node->callbacks.on_connection_request) {
+        return node->callbacks.on_connection_request(node->callbacks.user, mac, name, key);
     }
-    return net->host_config.request_cb(mac, name, key);
+    return node->host_config.request_cb(mac, name, key);
 }
 
 /* The node data callback gets a plain (mac, data, len) triple plus the
  * config-supplied user pointer. */
-static inline void _cb_data(fpr_node_t *net, const uint8_t *peer_mac,
+static inline void _cb_data(fpr_node_t *node, const uint8_t *peer_mac,
                             void *data, int len)
 {
-    if (net->callbacks.on_data) {
-        net->callbacks.on_data(net->callbacks.user, peer_mac, data, (size_t)len);
+    if (node->callbacks.on_data) {
+        node->callbacks.on_data(node->callbacks.user, peer_mac, data, (size_t)len);
     }
 }
 
@@ -284,20 +287,20 @@ static inline void _reset_peer_connection(FPR_STORE_HASH_TYPE *peer, fpr_peer_st
     peer->fragment_seq_num = 0;
 }
 
-void _peer_store_data(fpr_node_t *net, const fpr_rx_frame_t *frame, const fpr_package_t *data);
+void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_package_t *data);
 
-esp_err_t _peer_add(fpr_node_t *net, const uint8_t *peer_mac, const char *name, bool is_connected);
+esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name, bool is_connected);
 
-esp_err_t _peer_add_discovered(fpr_node_t *net, const char *name, const uint8_t *address, bool is_connected);
+esp_err_t _peer_add_discovered(fpr_node_t *node, const char *name, const uint8_t *address, bool is_connected);
 
 /* Remove a peer from peers_map and the transport peer table. */
-esp_err_t _peer_remove(fpr_node_t *net, const uint8_t *peer_mac);
+esp_err_t _peer_remove(fpr_node_t *node, const uint8_t *peer_mac);
 /* hashmap_foreach callback freeing route-table entries. */
 void _route_free_cb(void *key, void *value, void *user_data);
 
 void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info);
 /* Defined in fpr_send.c — shared by the handshake code. */
-fpr_connect_t _make_fpr_info_with_keys(fpr_node_t *net, bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
+fpr_connect_t _connect_info(fpr_node_t *node, bool include_pwk, bool include_lwk, const uint8_t *pwk, const uint8_t *lwk);
 
 /* hashmap_foreach payload for the peer-listing APIs: copy every store to
  * fpr_peer_info_t up to ctx capacity, optionally connected-only. Call

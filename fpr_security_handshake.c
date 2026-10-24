@@ -19,13 +19,13 @@
 
 static const char *TAG = "fpr_sec_handshake";
 
-esp_err_t fpr_sec_host_send_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const uint8_t *host_pwk)
+esp_err_t fpr_sec_host_send_pwk(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const uint8_t *host_pwk)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && peer != NULL && host_pwk != NULL, 
                         ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
     ESP_LOGI(TAG, "Sending PWK to client: %s", peer->name);
-    fpr_connect_t response = _make_fpr_info_with_keys(net, true, false, host_pwk, NULL);
+    fpr_connect_t response = _connect_info(node, true, false, host_pwk, NULL);
     /* Pre-arm the state BEFORE the send: on a synchronous transport the
      * client's PWK+LWK reply is processed inside fpr_send() and is
      * gated on sec_state==PWK_SENT — and a post-send assignment would
@@ -33,7 +33,7 @@ esp_err_t fpr_sec_host_send_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_ST
     memcpy(peer->security.pwk, host_pwk, FPR_KEY_SIZE);
     peer->security.pwk_valid = true;
     peer->sec_state = FPR_SEC_STATE_PWK_SENT;
-    esp_err_t err = fpr_send(net, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
+    esp_err_t err = fpr_send(node, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
 
     if (err != ESP_OK) {
         peer->sec_state = FPR_SEC_STATE_NONE;
@@ -43,7 +43,7 @@ esp_err_t fpr_sec_host_send_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_ST
     return err;
 }
 
-esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info, const uint8_t *host_pwk)
+esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info, const uint8_t *host_pwk)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && peer != NULL && info != NULL && host_pwk != NULL, 
                         ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
@@ -72,8 +72,8 @@ esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *net, const uint8_t *peer_mac, 
     _peer_clear_session(peer);
 
     // Send acknowledgment with PWK + LWK back to client
-    fpr_connect_t response = _make_fpr_info_with_keys(net, true, true, host_pwk, peer->security.lwk);
-    esp_err_t err = fpr_send(net, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
+    fpr_connect_t response = _connect_info(node, true, true, host_pwk, peer->security.lwk);
+    esp_err_t err = fpr_send(node, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
 
     if (err != ESP_OK) {
         peer->is_connected = false;
@@ -86,7 +86,7 @@ esp_err_t fpr_sec_host_verify_and_ack(fpr_node_t *net, const uint8_t *peer_mac, 
     return err;
 }
 
-esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info)
+esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && peer != NULL && info != NULL, 
                         ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
@@ -110,8 +110,8 @@ esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *net, const uint8_t *peer_mac, FP
     // sec_state==LWK_SENT — assigning after the send would both fail the
     // gate and clobber the ESTABLISHED state the nested ack set.
     peer->sec_state = FPR_SEC_STATE_LWK_SENT;
-    fpr_connect_t response = _make_fpr_info_with_keys(net, true, true, peer->security.pwk, peer->security.lwk);
-    esp_err_t err = fpr_send(net, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
+    fpr_connect_t response = _connect_info(node, true, true, peer->security.pwk, peer->security.lwk);
+    esp_err_t err = fpr_send(node, peer_mac, &response, sizeof(response), FPR_PACKET_ID_CONTROL);
 
     if (err != ESP_OK) {
         peer->sec_state = FPR_SEC_STATE_PWK_RECEIVED;
@@ -122,7 +122,7 @@ esp_err_t fpr_sec_client_handle_pwk(fpr_node_t *net, const uint8_t *peer_mac, FP
     return err;
 }
 
-esp_err_t fpr_sec_client_verify_ack(fpr_node_t *net, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info)
+esp_err_t fpr_sec_client_verify_ack(fpr_node_t *node, const uint8_t *peer_mac, FPR_STORE_HASH_TYPE *peer, const fpr_connect_t *info)
 {
     ESP_RETURN_ON_FALSE(peer_mac != NULL && peer != NULL && info != NULL, 
                         ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");

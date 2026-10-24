@@ -4,7 +4,7 @@
  *
  * The client, host, and extender RX handlers all start with the same
  * gates — paused, packet size, protocol-version dispatch — and then
- * enter peers_lock to work on the peer map. _rx_begin(net) owns that
+ * enter peers_lock to work on the peer map. _rx_begin(node) owns that
  * preamble so the quiesce/lock discipline lives in one place.
  */
 
@@ -16,47 +16,47 @@
 /* Stat increments go through peers_lock like every other stats write;
  * the lock is recursive so this is safe whether or not a caller already
  * holds it. */
-static void _rx_drop(fpr_node_t *net, bool count_drops)
+static void _rx_drop(fpr_node_t *node, bool count_drops)
 {
     if (!count_drops) {
         return;
     }
-    _peers_lock(net);
-    net->stats.packets_dropped++;
-    _peers_unlock(net);
+    _peers_lock(node);
+    node->stats.packets_dropped++;
+    _peers_unlock(node);
 }
 
-bool _rx_begin(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data, int len,
+bool _rx_begin(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len,
                bool count_drops, fpr_rx_ctx_t *ctx)
 {
-    if (net->paused) {
-        _rx_drop(net, count_drops);
+    if (node->paused) {
+        _rx_drop(node, count_drops);
         return false;
     }
 
     if (!is_fpr_package_compatible(len)) {
-        _rx_drop(net, count_drops);
+        _rx_drop(node, count_drops);
         return false;
     }
 
     /* Extender accounting counts a received packet once it is size-valid,
      * before version dispatch may reject it. */
     if (count_drops) {
-        _peers_lock(net);
-        net->stats.packets_received++;
-        _peers_unlock(net);
+        _peers_lock(node);
+        node->stats.packets_received++;
+        _peers_unlock(node);
     }
 
     /* Decode into handler-owned storage — the driver buffer stays
      * untouched and every path below reads the same snapshot. */
     if (!fpr_codec_decode(data, (size_t)len, &ctx->decoded)) {
-        _rx_drop(net, count_drops);
+        _rx_drop(node, count_drops);
         return false;
     }
     const fpr_package_t *package = &ctx->decoded;
 
-    if (!fpr_version_handle_version(frame, data, len, package->version)) {
-        _rx_drop(net, count_drops);
+    if (!fpr_version_dispatch(frame, data, len, package->version)) {
+        _rx_drop(node, count_drops);
         return false;
     }
 
@@ -76,9 +76,9 @@ bool _rx_begin(fpr_node_t *net, const fpr_rx_frame_t *frame, const uint8_t *data
      * this same task. The quiesce gate is re-checked inside the lock —
      * deinit flips state to UNINITIALIZED before draining, so a callback
      * dispatched just before unregister may only reach the lock now. */
-    _peers_lock(net);
-    if (net->state == FPR_STATE_UNINITIALIZED) {
-        _peers_unlock(net);
+    _peers_lock(node);
+    if (node->state == FPR_STATE_UNINITIALIZED) {
+        _peers_unlock(node);
         return false;
     }
     return true;

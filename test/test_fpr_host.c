@@ -75,7 +75,7 @@ static bool host_connection_request_cb(const uint8_t *peer_mac, const char *peer
     // Get RSSI from peer info if available
     fpr_peer_info_t info;
     int8_t rssi = 0;
-    if (fpr_peer_info(&s_node, (uint8_t*)peer_mac, &info) == ESP_OK) {
+    if (fpr_peer_lookup(&s_node, (uint8_t*)peer_mac, &info) == ESP_OK) {
         rssi = info.rssi;
     }
     
@@ -105,7 +105,7 @@ static void host_on_data_received(void *user, const uint8_t *peer_addr, void *da
     
     // Update last_seen timestamp by getting peer info (triggers internal update)
     fpr_peer_info_t peer_info;
-    if (fpr_peer_info(&s_node, src_mac, &peer_info) == ESP_OK) {
+    if (fpr_peer_lookup(&s_node, src_mac, &peer_info) == ESP_OK) {
         ESP_LOGD(TAG, "[DATA] Peer %s last seen: %llu ms ago", peer_info.name, peer_info.last_seen_ms);
         
         // Check if this is the first message after reconnection (security state just established)
@@ -151,7 +151,7 @@ static void print_peer_list(void)
     fpr_peer_info_t peers[20];
     
     // Get all peers
-    size_t total = fpr_list_peers(&s_node, peers, 20);
+    size_t total = ({size_t _v=0;(void)fpr_list_peers(&s_node, peers, 20,&_v);_v;});
     ESP_LOGI(TAG, "=== All Peers (%zu) ===", total);
     for (size_t i = 0; i < total; i++) {
         ESP_LOGI(TAG, "  %zu. %s (" MACSTR ") - State: %d, RSSI: %d, Last seen: %llu ms ago",
@@ -186,8 +186,8 @@ static void stats_task(void *pvParameters)
         vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(10000)); // Every 10 seconds
         
         // In AUTO mode, counters aren't updated by callback, so count from peer list
-        size_t current_connected = fpr_host_peer_count(&s_node);
-        size_t total_peers = (size_t)fpr_peer_count(&s_node);
+        size_t current_connected = ({size_t _v=0;(void)fpr_host_connected_count(&s_node,&_v);_v;});
+        size_t total_peers = (size_t)({size_t _v=0;(void)fpr_peer_count(&s_node,&_v);_v;});
         
         // Update counters for auto mode (manual mode uses callback)
         if (test_auto_mode) {
@@ -232,7 +232,7 @@ static void host_loop_task(void *pvParameters)
     }
     
     // Wait for loop to complete
-    while (fpr_loop_task_running(&s_node)) {
+    while (({bool _v=false;(void)fpr_loop_task_running(&s_node,&_v);_v;})) {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
     
@@ -248,7 +248,7 @@ static void host_loop_task(void *pvParameters)
     }
     
     // Check connected peers
-    size_t connected_count = fpr_host_peer_count(&s_node);
+    size_t connected_count = ({size_t _v=0;(void)fpr_host_connected_count(&s_node,&_v);_v;});
     ESP_LOGI(TAG, "[LOOP] Connected peers: %zu", connected_count);
     
     if (connected_count > 0) {
@@ -262,7 +262,7 @@ static void host_loop_task(void *pvParameters)
         while (1) {
             // Get all connected peers
             fpr_peer_info_t peers[10];
-            size_t count = fpr_list_peers(&s_node, peers, 10);
+            size_t count = ({size_t _v=0;(void)fpr_list_peers(&s_node, peers, 10,&_v);_v;});
             
             for (size_t i = 0; i < count; i++) {
                 if (peers[i].state == FPR_PEER_STATE_CONNECTED) {
@@ -324,7 +324,7 @@ static esp_err_t wifi_init(void)
 static void host_queue_mode_stress_test_task(void *pvParameters)
 {
     // Wait for at least one client to connect
-    while (fpr_host_peer_count(&s_node) == 0) {
+    while (({size_t _v=0;(void)fpr_host_connected_count(&s_node,&_v);_v;}) == 0) {
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
     
@@ -347,7 +347,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
     
     // Get connected peers
     fpr_peer_info_t peers[10];
-    size_t peer_count = fpr_list_peers(&s_node, peers, 10);
+    size_t peer_count = ({size_t _v=0;(void)fpr_list_peers(&s_node, peers, 10,&_v);_v;});
     
     int connected_count = 0;
     for (size_t i = 0; i < peer_count; i++) {
@@ -451,7 +451,7 @@ static void host_queue_mode_stress_test_task(void *pvParameters)
             fpr_stats_t stats_after;
             fpr_get_stats(&s_node, &stats_after);
             uint32_t dropped = stats_after.packets_dropped - stats_before.packets_dropped;
-            uint32_t queued = fpr_peer_queued_packets(&s_node, peer_mac);
+            uint32_t queued = ({uint32_t _v=0;(void)fpr_peer_queued_packets(&s_node, peer_mac,&_v);_v;});
             
             if (dropped > 0 || queued <= 1) {
                 ESP_LOGI(TAG, "   ✓ PASS: LATEST_ONLY working (dropped=%lu, queued=%lu)", 

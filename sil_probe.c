@@ -40,7 +40,7 @@ size_t fpr_sil_build_control(void *buf, size_t cap,
     memcpy(pkg->dest_mac, dest, MAC_ADDRESS_LENGTH);
     pkg->max_hops = FPR_DEFAULT_MAX_HOPS;
 
-    fpr_connect_t *ci = &pkg->protocol.connect_info;
+    fpr_hello_t *ci = &pkg->payload.connect_info;
     memset(ci, 0, sizeof(*ci));
     if (name != NULL) {
         strncpy(ci->name, name, sizeof(ci->name) - 1);
@@ -65,7 +65,7 @@ size_t fpr_sil_build_data(void *buf, size_t cap,
     if (buf == NULL || origin == NULL || dest == NULL ||
         cap < sizeof(fpr_package_t) ||
         id == FPR_PACKET_ID_CONTROL ||
-        payload_len > sizeof(((fpr_package_t *)0)->protocol)) {
+        payload_len > sizeof(((fpr_package_t *)0)->payload)) {
         return 0;
     }
     fpr_package_t pkg_storage;
@@ -79,7 +79,7 @@ size_t fpr_sil_build_data(void *buf, size_t cap,
     memcpy(pkg->dest_mac, dest, MAC_ADDRESS_LENGTH);
     pkg->max_hops = FPR_DEFAULT_MAX_HOPS;
     if (payload != NULL && payload_len > 0) {
-        memcpy(&pkg->protocol, payload, payload_len);
+        memcpy(&pkg->payload, payload, payload_len);
         pkg->payload_size = (uint16_t)payload_len;
     }
     return fpr_codec_encode(pkg, buf, cap) != 0 ? sizeof(*pkg) : 0;
@@ -130,7 +130,7 @@ bool fpr_sil_describe(const void *buf, size_t len, char *out, size_t out_len)
      * test can echo them back through the handshake state machine.
      * Test path only; keys are random test vectors in SIL. */
     if (pkg->id == FPR_PACKET_ID_CONTROL && n > 0 && (size_t)n < out_len) {
-        const fpr_connect_t *ci = &pkg->protocol.connect_info;
+        const fpr_hello_t *ci = &pkg->payload.connect_info;
         size_t left = out_len - (size_t)n;
         char *p = out + n;
         /* %.*s: the wire name may fill its field with no NUL. A

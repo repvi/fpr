@@ -10,6 +10,7 @@
  */
 
 #include "fpr/internal/helpers.h"
+#include "fpr/internal/fsm.h"
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -19,7 +20,7 @@ static const char *TAG = "fpr_helpers";
 /* Returns true when the packet should be enqueued/callbacked, false when
  * the queue-mode policy dropped it. Callers must honor the return: the
  * drops counted here previously still reached the queue. */
-static bool _store_data_with_mode(fpr_node_t *node, FPR_STORE_HASH_TYPE *store, const fpr_package_t *data, const uint8_t *peer_address)
+static bool _store_data_with_mode(fpr_node_t *node, FPR_PEER_TYPE *store, const fpr_package_t *data, const uint8_t *peer_address)
 {
     // Determine packet type characteristics
     bool is_single_packet = (data->package_type == FPR_PACKAGE_TYPE_SINGLE);
@@ -51,11 +52,11 @@ static bool _store_data_with_mode(fpr_node_t *node, FPR_STORE_HASH_TYPE *store, 
         }
 
         // Single packet in latest-only mode - drain queue before adding
-        if (is_single_packet && store->queued_packets > 0 && store->response_queue != NULL) {
+        if (is_single_packet && store->queued_packets > 0 && store->rx_queue != NULL) {
             fpr_package_t discard_pkg;
             uint32_t dropped = 0;
             // Drain all existing packets from queue and count them
-            while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
+            while (xQueueReceive(store->rx_queue, &discard_pkg, 0) == pdPASS) {
                 dropped++;
             }
             store->queued_packets = 0;
@@ -74,16 +75,23 @@ static bool _store_data_with_mode(fpr_node_t *node, FPR_STORE_HASH_TYPE *store, 
                 #endif
                 // Drain partial fragments from queue
                 fpr_package_t discard_pkg;
-                while (xQueueReceive(store->response_queue, &discard_pkg, 0) == pdPASS) {
+                uint32_t removed = 0;
+                while (xQueueReceive(store->rx_queue, &discard_pkg, 0) == pdPASS) {
                     // Check if this was part of old incomplete sequence
                     if (discard_pkg.sequence_num == store->fragment_seq_num) {
                         node->stats.packets_dropped++;
+                        removed++;
                     } else {
                         // This was a complete packet, put it back (shouldn't happen often)
-                        xQueueSendToFront(store->response_queue, &discard_pkg, 0);
+                        xQueueSendToFront(store->rx_queue, &discard_pkg, 0);
                         break;
                     }
                 }
+                /* Keep queued_packets honest: every drained fragment was
+                 * counted on enqueue, so it must be un-counted here —
+                 * the pushed-back packet stays counted. */
+                store->queued_packets = (store->queued_packets > removed)
+                    ? store->queued_packets - removed : 0;
             }
             store->receiving_fragmented = true;
             store->fragment_seq_num = data->sequence_num;
@@ -111,13 +119,13 @@ static bool _store_data_with_mode(fpr_node_t *node, FPR_STORE_HASH_TYPE *store, 
 
 void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_package_t *data)
 {
-    node->stats.packets_received++;
     const uint8_t *peer_address = frame->src_mac;
     /* Recursive: callers in the RX path already hold peers_lock, and the
      * on_data callback below may call fpr_remove_peer() which takes
      * it again on this same task. */
     _peers_lock(node);
-    FPR_STORE_HASH_TYPE *store = _peer_from_map(node, peer_address);
+    node->stats.packets_received++;
+    FPR_PEER_TYPE *store = _peer_from_map(node, peer_address);
     
     if (store && store->state == FPR_PEER_STATE_CONNECTED) {
         _peer_touch(store, frame);
@@ -131,7 +139,9 @@ void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_p
         if (data->sequence_num != 0) {
             int32_t seq_diff = (int32_t)(data->sequence_num - store->last_seq_num);
             bool is_newer = (seq_diff > 0);
-            bool is_fragment_resend = (seq_diff == 0) && store->receiving_fragmented;
+            bool is_fragment_resend = store->receiving_fragmented &&
+                data->sequence_num == store->fragment_seq_num &&
+                data->package_type != FPR_PACKAGE_TYPE_SINGLE;
             if (!is_newer && !is_fragment_resend) {
                 // Potential replay attack - drop packet with old sequence
                 node->stats.replay_attacks_blocked++;
@@ -171,7 +181,7 @@ void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_p
         }
         
         // Store in queue (non-blocking) - do not block the receiver on queue availability
-        if (xQueueSend(store->response_queue, (void*)data, 0) == pdPASS) {
+        if (xQueueSend(store->rx_queue, (void*)data, 0) == pdPASS) {
             // Increment queued packet count only for complete packets
             if (is_complete_packet) {
                 store->queued_packets++;
@@ -188,10 +198,10 @@ void _peer_store_data(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_p
          * code: a callback may remove this peer or clear the peer map. */
         if (node->callbacks.on_data) {
             fpr_package_t *package = (fpr_package_t *)data;
-            const size_t cap = sizeof(package->protocol);
+            const size_t cap = sizeof(package->payload);
             int data_len = (int)((data->payload_size > 0 && data->payload_size <= cap)
                                  ? data->payload_size : cap);
-            _cb_data(node, peer_address, &package->protocol, data_len);
+            _cb_data(node, peer_address, &package->payload, data_len);
         }
     }
     _peers_unlock(node);
@@ -218,7 +228,7 @@ esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name,
         return ESP_ERR_INVALID_STATE;
     }
 
-    FPR_STORE_HASH_TYPE *store = (FPR_STORE_HASH_TYPE *)heap_caps_calloc(1, sizeof(FPR_STORE_HASH_TYPE), MALLOC_CAP_DEFAULT);
+    FPR_PEER_TYPE *store = (FPR_PEER_TYPE *)heap_caps_calloc(1, sizeof(FPR_PEER_TYPE), MALLOC_CAP_DEFAULT);
     if (!store) {
         _peers_unlock(node);
         ESP_LOGE(TAG, "Failed to allocate peer store");
@@ -226,8 +236,8 @@ esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name,
     }
     
     _safe_string_copy(store->name, name ? name : "Unnamed", sizeof(store->name));
-    store->response_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
-    if (!store->response_queue) {
+    store->rx_queue = xQueueCreate(FPR_QUEUE_LENGTH, sizeof(fpr_package_t));
+    if (!store->rx_queue) {
         _peer_store_free_or_defer(store);
         _peers_unlock(node);
         return ESP_ERR_NO_MEM;
@@ -235,19 +245,13 @@ esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name,
     
     // Initialize security
     fpr_security_init_keys(&store->security);
-    store->sec_state = FPR_SEC_STATE_NONE;
-    
-    store->is_connected = is_connected;
+
+    /* calloc owns every zero-valued field: sec_state/state DISCOVERED,
+     * hop_count, rssi, packets_received, queued_packets,
+     * receiving_fragmented, fragment_seq_num. */
     store->state = is_connected ? FPR_PEER_STATE_CONNECTED : FPR_PEER_STATE_DISCOVERED;
-    store->hop_count = 0;
-    memset(store->next_hop_mac, 0, 6);
     store->last_seen = esp_timer_get_time();
-    store->rssi = 0;
-    store->packets_received = 0;
-    store->queued_packets = 0;
     store->queue_mode = node->default_queue_mode;
-    store->receiving_fragmented = false;
-    store->fragment_seq_num = 0;
     
     // Keep a persistent MAC copy — it is the hashmap key, so it must
     // outlive the caller's buffer.
@@ -275,18 +279,12 @@ esp_err_t _peer_add(fpr_node_t *node, const uint8_t *peer_mac, const char *name,
 }
 
 // used by multiple modes
-esp_err_t _peer_add_discovered(fpr_node_t *node, const char *name, const uint8_t *address, bool is_connected)
-{
-    ESP_RETURN_ON_FALSE(name != NULL && address != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
-    return _peer_add(node, address, name, is_connected);
-}
-
 // Helper: Copy peer data to info structure
-void _peer_copy_to_info(const FPR_STORE_HASH_TYPE *peer, fpr_peer_info_t *info)
+void _peer_copy_to_info(const FPR_PEER_TYPE *peer, fpr_peer_info_t *info)
 {
     memcpy(info->mac, peer->mac, MAC_ADDRESS_LENGTH);
     _safe_string_copy(info->name, peer->name, sizeof(info->name));
-    info->is_connected = peer->is_connected;
+    info->is_connected = (peer->state == FPR_PEER_STATE_CONNECTED);
     info->state = peer->state;
     info->hop_count = peer->hop_count;
     info->rssi = peer->rssi;
@@ -302,7 +300,7 @@ esp_err_t _peer_remove(fpr_node_t *node, const uint8_t *peer_mac)
     /* The map key may point inside the store we are about to release. */
     uint8_t mac[MAC_ADDRESS_LENGTH];
     memcpy(mac, peer_mac, sizeof(mac));
-    FPR_STORE_HASH_TYPE *var = _peer_from_map(node, mac);
+    FPR_PEER_TYPE *var = _peer_from_map(node, mac);
     esp_err_t result;
     if (var != NULL) {
         if (!hashmap_remove(&node->peers_map, mac)) {
@@ -327,7 +325,7 @@ void _route_free_cb(void *key, void *value, void *user_data)
 void _peer_collect_cb(void *key, void *value, void *user_data)
 {
     (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     fpr_peer_collect_ctx_t *ctx = (fpr_peer_collect_ctx_t *)user_data;
 
     if (peer && ctx->count < ctx->max_peers) {

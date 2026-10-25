@@ -37,7 +37,11 @@
 
 #define FPR_DEFAULT_MAX_HOPS 10
 
-/* Byte-exact stand-in for esp_now_peer_info_t: fpr_connect_t goes on
+/* Sanity bound on declared payload sizes — 64 KiB is larger than any
+ * real fpr_package_t and rejects garbage length fields early. */
+#define FPR_DATA_SIZE_MAX 65535
+
+/* Byte-exact stand-in for esp_now_peer_info_t: fpr_hello_t goes on
  * the wire as a raw struct inside fpr_package_t, so this layout is
  * part of the protocol — do not reorder, resize, or "improve" it.
  * Fields mirror ESP-NOW's (6B MAC, 16B LMK, u8 channel, int ifidx,
@@ -60,7 +64,7 @@ typedef struct {
     uint8_t lwk[FPR_KEY_SIZE];  // Local Working Key
     bool has_pwk;               // PWK is included
     bool has_lwk;               // LWK is included
-} fpr_connect_t;
+} fpr_hello_t;
 
 typedef enum {
     FPR_PACKAGE_TYPE_SINGLE = 0,
@@ -72,13 +76,11 @@ typedef enum {
 typedef struct {
     uint8_t mac[MAC_ADDRESS_LENGTH];   // Peer MAC (hashmap key)
     char name[PEER_NAME_MAX_LENGTH];
-    QueueHandle_t response_queue;
+    QueueHandle_t rx_queue;
     fpr_security_keys_t security;  // Security keys for this peer
     fpr_security_state_t sec_state; // Security handshake state
-    bool is_connected;
     fpr_peer_state_t state;     // Connection state
     uint8_t hop_count;          // Distance from origin (0 = direct connection)
-    uint8_t next_hop_mac[MAC_ADDRESS_LENGTH];    // MAC of next device in route (for forwarding)
     int64_t last_seen;          // Last time we heard from this peer (microseconds, esp_timer)
     int8_t rssi;                // Signal strength
     uint32_t packets_received;  // Packets received from this peer
@@ -91,9 +93,9 @@ typedef struct {
                                  // the store alive across _peers_unlock()
     bool dead;                   // Removed from map while refcounted; freed at
                                  // last release
-} fpr_store_hash_t;
+} fpr_peer_t;
 
-#define FPR_STORE_HASH_TYPE fpr_store_hash_t
+#define FPR_PEER_TYPE fpr_peer_t
 
 #define FPR_BROADCAST_ADDRESS {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
 #define FPR_QUEUE_LENGTH 20 // for enough data for incoming packets
@@ -115,9 +117,9 @@ typedef struct {
     union {
         int data_int[FPR_PROTOCOL_DATA_INT_SIZE];
         uint8_t general_data[FPR_PROTOCOL_DATA_INT_SIZE * sizeof(int)];
-        fpr_connect_t connect_info;
+        fpr_hello_t connect_info;
         // customized struct here
-    } protocol;
+    } payload;
     
     fpr_package_type_t package_type;
     fpr_package_id_t id;
@@ -151,9 +153,8 @@ typedef struct fpr_node {
     HashMap routes_map;            // Extender routes keyed by dest MAC
     char name[PEER_NAME_MAX_LENGTH];
     uint8_t mac[MAC_ADDRESS_LENGTH];
-    fpr_visibility_t access_state;
+    fpr_visibility_t visibility;
     fpr_mode_type_t current_mode;
-    bool routing_enabled;       // Enable mesh routing/forwarding
     
     // Connection control (host mode)
     fpr_host_config_t host_config;
@@ -183,7 +184,6 @@ typedef struct fpr_node {
     volatile bool loop_stop_requested;
     volatile bool reconnect_stop_requested;
     fpr_state_t state;                // Current network state
-    bool paused;                      // Paused flag
     
     // Channel and power management
     uint8_t channel;                  // WiFi channel (1-14, 0 = auto)

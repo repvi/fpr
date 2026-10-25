@@ -29,7 +29,7 @@ static void _rx_drop(fpr_node_t *node, bool count_drops)
 bool _rx_begin(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *data, int len,
                bool count_drops, fpr_rx_ctx_t *ctx)
 {
-    if (node->paused) {
+    if (node->state == FPR_STATE_PAUSED) {
         _rx_drop(node, count_drops);
         return false;
     }
@@ -65,7 +65,7 @@ bool _rx_begin(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *dat
     ctx->is_control = (package->id == FPR_PACKET_ID_CONTROL);
     memset(&ctx->control, 0, sizeof(ctx->control));
     if (ctx->is_control) {
-        memcpy(&ctx->control, &package->protocol.connect_info, sizeof(ctx->control));
+        memcpy(&ctx->control, &package->payload.connect_info, sizeof(ctx->control));
         ctx->control.name[FPR_CONNECT_NAME_SIZE - 1] = '\0';
     }
     ctx->package = package;

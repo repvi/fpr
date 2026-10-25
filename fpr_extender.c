@@ -93,15 +93,14 @@ void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *
     if (!_rx_begin(node, frame, data, len, true, &ctx)) {
         return;
     }
-    /* Forwarding adjusts hop metadata, not the driver-owned RX buffer. */
-    fpr_package_t received;
-    memcpy(&received, data, sizeof(received));
-    fpr_package_t *package = &received;
+    /* Forwarding adjusts hop metadata on the preamble's decoded copy —
+     * ctx.decoded already holds the wire bytes, no second memcpy. */
+    fpr_package_t *package = &ctx.decoded;
 
     // Update or add peer liveness info — serialize against remove/clear on
     // other tasks (peer stores are heap-owned by the map). The sender is a
     // direct neighbor: its distance is always 1 hop.
-    FPR_STORE_HASH_TYPE *peer = _peer_from_map(node, frame->src_mac);
+    FPR_PEER_TYPE *peer = _peer_from_map(node, frame->src_mac);
     if (peer) {
         _peer_touch(peer, frame);
         peer->packets_received++;
@@ -138,6 +137,11 @@ void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *
             if (route->hop_count == 0 || via_hops < route->hop_count) {
                 route->hop_count = via_hops;
                 memcpy(route->next_hop_mac, frame->src_mac, 6);
+                /* Guard the +1: hop_count is u8 — 255+1 wraps to 0 and
+                 * aliases the "no route learned" sentinel. */
+                if (package->hop_count >= UINT8_MAX) {
+                    route->hop_count = UINT8_MAX;
+                }
                 ESP_LOGI(TAG, "Learned route to " MACSTR " via " MACSTR " (hops: %d)",
                          MAC2STR(package->origin_mac), MAC2STR(frame->src_mac),
                          route->hop_count);
@@ -148,14 +152,13 @@ void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *
     
     // Check if this packet is for us
     bool is_for_me = (memcmp(package->dest_mac, node->mac, 6) == 0);
-    const uint8_t broadcast_mac[6] = FPR_BROADCAST_ADDRESS;
-    bool is_broadcast = (memcmp(package->dest_mac, broadcast_mac, 6) == 0);
+    bool is_broadcast = is_broadcast_address(package->dest_mac);
     
     if (is_for_me || is_broadcast) {
         // Process locally (store in queue if peer exists)
-        if (peer && peer->response_queue) {
+        if (peer && peer->rx_queue) {
             // Non-blocking enqueue to avoid delaying RX path
-            if (xQueueSend(peer->response_queue, data, 0) == pdPASS &&
+            if (xQueueSend(peer->rx_queue, data, 0) == pdPASS &&
                 (package->package_type == FPR_PACKAGE_TYPE_SINGLE ||
                  package->package_type == FPR_PACKAGE_TYPE_END)) {
                 peer->queued_packets++;
@@ -166,14 +169,14 @@ void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *
     }
     
     // Forward packet if routing enabled and appropriate
-    if (node->routing_enabled && _should_forward_packet(node, package, is_for_me, is_broadcast)) {
+    if (node->current_mode == FPR_MODE_EXTENDER && _should_forward_packet(node, package, is_for_me, is_broadcast)) {
         package->hop_count++;  // Increment hop count on our local copy
 
         // Determine next hop
         const uint8_t *next_hop = NULL;
         if (is_broadcast) {
             // Flood: downstream nodes re-derive broadcast from dest_mac
-            next_hop = broadcast_mac;
+            next_hop = package->dest_mac;
         } else {
             // Look up the learned route to the final destination
             const fpr_route_entry_t *route =
@@ -181,13 +184,13 @@ void _rx_extender(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *
             if (route) {
                 next_hop = route->next_hop_mac;
             } else {
-                // Fallback: destination heard directly before routes existed
-                FPR_STORE_HASH_TYPE *dest_peer = _peer_from_map(node, package->dest_mac);
+                /* Direct-neighbor fallback: if we have heard the
+                 * destination ourselves it is reachable in one hop —
+                 * peer->next_hop_mac is never populated (routes live in
+                 * routes_map), so dest_mac itself is the next hop. */
+                FPR_PEER_TYPE *dest_peer = _peer_from_map(node, package->dest_mac);
                 if (dest_peer && dest_peer->hop_count > 0) {
-                    next_hop = dest_peer->next_hop_mac;
-                    if (memcmp(next_hop, (const uint8_t[6]){0}, 6) == 0) {
-                        next_hop = package->dest_mac;
-                    }
+                    next_hop = package->dest_mac;
                 }
             }
         }

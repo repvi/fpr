@@ -16,8 +16,6 @@
 #include "esp_heap_caps.h"
 
 static const char *TAG = "fpr_diag";
-#define FPR_REQUIRE_NODE(n) \
-    ESP_RETURN_ON_FALSE((n) != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL")
 code_version_t fpr_get_protocol_version(void)
 {
     return FPR_PROTOCOL_VERSION;
@@ -73,7 +71,7 @@ typedef struct {
 static void _route_peer_stale_cb(void *key, void *value, void *user_data)
 {
     const uint8_t *mac = (const uint8_t *)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     route_cleanup_ctx_t *ctx = (route_cleanup_ctx_t *)user_data;
 
     if (peer) {

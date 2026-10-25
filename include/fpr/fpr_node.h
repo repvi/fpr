@@ -146,6 +146,10 @@ esp_err_t fpr_peer_find(fpr_node_t *node, const char *peer_name, uint8_t *mac_ou
  * @brief Actively probe a peer: if it was seen within @p timeout_ms the
  *        check is free; otherwise a device-info ping is sent and the
  *        peer's last-seen stamp is watched until the deadline.
+ * @note The target does not reply to a unicast hello — liveness is only
+ *       confirmed if incidental traffic (its own broadcast, a reply to
+ *       something else) bumps last_seen before the deadline. Use a
+ *       timeout >= the peer's advertise interval for meaningful results.
  * @return ESP_OK reachable, ESP_ERR_TIMEOUT silent, error codes from
  *         the send path propagate.
  */

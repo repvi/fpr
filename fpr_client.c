@@ -13,6 +13,7 @@
 #include "fpr/internal/rx.h"
 #include "fpr/fpr_security.h"
 #include "fpr/internal/fpr_security_handshake.h"
+#include "fpr/internal/fsm.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_check.h"
@@ -26,8 +27,6 @@ typedef struct {
 } host_search_ctx_t;
 
 static const char *TAG = "fpr_client";
-#define FPR_REQUIRE_NODE(n) \
-    ESP_RETURN_ON_FALSE((n) != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL")
 
 /* Send a (re)connection request to `mac` with a consistent log line.
  * Call under _peers_lock(node) — the send path re-takes it recursively. */
@@ -44,9 +43,9 @@ static void _client_send_request(fpr_node_t *node, const uint8_t *mac, const cha
 static void _peer_connected_cb(void *key, void *value, void *user_data)
 {
     (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     bool *is_connected = (bool *)user_data;
-    if (peer && peer->is_connected) {
+    if (peer && peer->state == FPR_PEER_STATE_CONNECTED) {
         *is_connected = true;
     }
 }
@@ -65,7 +64,7 @@ esp_err_t fpr_client_connected(fpr_node_t *node, bool *out)
     return ESP_OK;
 }
 
-static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_connect_t *info)
+static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame, const fpr_hello_t *info)
 {
     const int8_t rssi = _rx_rssi(frame);
 
@@ -74,7 +73,7 @@ static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame,
 
     // Check if we're already connected to a DIFFERENT host
     // Allow reconnection to the SAME host (e.g., after restart)
-    FPR_STORE_HASH_TYPE *existing = _peer_from_map(node, frame->src_mac);
+    FPR_PEER_TYPE *existing = _peer_from_map(node, frame->src_mac);
     bool already_connected = false;
     (void)fpr_client_connected(node, &already_connected);
     if (!existing && already_connected) {
@@ -95,7 +94,7 @@ static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame,
                 #endif
                 // Still add as discovered but don't initiate connection
                 if (!existing) {
-                    _peer_add_discovered(node, info->name, frame->src_mac, false);
+                    _peer_add(node, frame->src_mac, info->name, false);
                 }
                 return;
             }
@@ -106,7 +105,7 @@ static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame,
             #endif
             // Add as discovered but do not initiate handshake
             if (!existing) {
-                _peer_add_discovered(node, info->name, frame->src_mac, false);
+                _peer_add(node, frame->src_mac, info->name, false);
             }
             return;
         }
@@ -115,7 +114,7 @@ static void _client_discover_host(fpr_node_t *node, const fpr_rx_frame_t *frame,
     // Add as discovered FIRST (this registers the peer with ESP-NOW) - skip if already exists
     esp_err_t err = ESP_OK;
     if (!existing) {
-        err = _peer_add_discovered(node, info->name, frame->src_mac, false);
+        err = _peer_add(node, frame->src_mac, info->name, false);
     }
 
     if (err == ESP_OK) {
@@ -146,14 +145,14 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
         return;
     }
     const fpr_package_t *package = ctx.package;
-    const fpr_connect_t *info = &ctx.control;
+    const fpr_hello_t *info = &ctx.control;
     bool is_control_packet = ctx.is_control;
     bool is_broadcast = ctx.is_broadcast;
 
     // Handle broadcast discovery messages from host (always control packets)
     if (is_broadcast && is_control_packet) {
         // Check if we already know this host
-        FPR_STORE_HASH_TYPE *known_host = _peer_from_map(node, frame->src_mac);
+        FPR_PEER_TYPE *known_host = _peer_from_map(node, frame->src_mac);
         if (known_host == NULL) {
             #if (FPR_DEBUG == 1)
             ESP_LOGI(TAG, "Found new host: %s (" MACSTR ")", info->name, MAC2STR(frame->src_mac));
@@ -164,11 +163,11 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
             // If host restarted, it lost our connection info and is broadcasting again
             // We should reinitiate connection if not fully connected
             // BUT: Don't interrupt an in-progress handshake (sec_state > NONE)
-            if (!known_host->is_connected || known_host->sec_state != FPR_SEC_STATE_ESTABLISHED) {
+            if (known_host->state != FPR_PEER_STATE_CONNECTED || known_host->sec_state != FPR_SEC_STATE_ESTABLISHED) {
                 // Only reset if we're not already in the middle of a handshake
                 if (known_host->sec_state == FPR_SEC_STATE_NONE) {
                     ESP_LOGI(TAG, "Host %s broadcast received - reinitiating connection (current state=%d, connected=%d)",
-                             info->name, known_host->sec_state, known_host->is_connected);
+                             info->name, known_host->sec_state, known_host->state == FPR_PEER_STATE_CONNECTED);
                     // Reset connection/session state and reconnect
                     _reset_peer_connection(known_host, FPR_PEER_STATE_DISCOVERED);
                     _peer_touch(known_host, frame);
@@ -204,7 +203,7 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
         }
     } else if (!is_broadcast) {
         // Handle unicast response from host (security handshake or data)
-        FPR_STORE_HASH_TYPE *existing = _peer_from_map(node, frame->src_mac);
+        FPR_PEER_TYPE *existing = _peer_from_map(node, frame->src_mac);
         if (existing) {
             // Update timestamp first for any unicast from known peer
             _peer_touch(existing, frame);
@@ -218,7 +217,7 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
                     // CRITICAL: If we receive a PWK while in ESTABLISHED or later state,
                     // it means the host has restarted and lost our connection.
                     // We must reset our state and restart the handshake.
-                    if (existing->sec_state >= FPR_SEC_STATE_LWK_SENT) {
+                    if (fpr_sec_at_least(existing, FPR_SEC_STATE_LWK_SENT)) {
                         ESP_LOGI(TAG, "Host %s appears to have restarted (received PWK while in state %d) - resetting connection",
                                  existing->name, existing->sec_state);
                         _reset_peer_connection(existing, FPR_PEER_STATE_DISCOVERED);
@@ -253,7 +252,7 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
                     // Process ACK if we're in the correct state (LWK_SENT) or earlier
                     if (existing->sec_state == FPR_SEC_STATE_LWK_SENT) {
                         // Verify and mark connected
-                        fpr_sec_client_verify_ack(node, frame->src_mac, existing, info);
+                        fpr_sec_client_verify_ack(node, existing, info);
                     }
                     #if (FPR_DEBUG == 1)
                     else {
@@ -265,7 +264,7 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
             }
             
             // If already connected, store application data (non-control packets)
-            if (existing->is_connected && !is_control_packet) {
+            if (existing->state == FPR_PEER_STATE_CONNECTED && !is_control_packet) {
                 // Store data from connected peers (unicast only)
                 #if (FPR_DEBUG == 1)
                 ESP_LOGI(TAG, "Received data from connected host: %s (id: %d)", existing->name, package->id);
@@ -280,7 +279,7 @@ void _rx_client(fpr_node_t *node, const fpr_rx_frame_t *frame, const uint8_t *da
 static void _host_find_cb(void *key, void *value, void *user_data)
 {
     (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     host_search_ctx_t *ctx = (host_search_ctx_t *)user_data;
     // Hosts we can use are DISCOVERED/PENDING/CONNECTED — REJECTED and
     // BLOCKED are deliberately excluded. Prefer a CONNECTED host over a
@@ -396,7 +395,7 @@ esp_err_t fpr_client_connect(fpr_node_t *node, const uint8_t *peer_mac, uint32_t
     const TickType_t timeout = pdMS_TO_TICKS(timeout_ms);
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_lookup_locked(node, peer_mac);
     if (peer == NULL) {
         _peers_unlock(node);
         ESP_LOGE(TAG, "Host not found - scan first");
@@ -455,10 +454,14 @@ esp_err_t fpr_client_disconnect(fpr_node_t *node)
     uint8_t host_mac[6];
     esp_err_t err = fpr_client_host(node, host_mac, NULL, 0);
     if (err == ESP_OK) {
-        FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, host_mac);
-        if (peer) {
+        FPR_PEER_TYPE *peer = _peer_lookup_locked(node, host_mac);
+        if (peer && peer->state == FPR_PEER_STATE_CONNECTED) {
             _reset_peer_connection(peer, FPR_PEER_STATE_DISCOVERED);
             ESP_LOGI(TAG, "Disconnected from host: %s", peer->name);
+            _peers_unlock(node);
+            return ESP_OK;
+        }
+        if (peer) {
             _peers_unlock(node);
             return ESP_OK;
         }
@@ -512,8 +515,8 @@ void _client_reconnect_step(fpr_node_t *node, uint32_t now_ms)
         uint8_t host_mac[MAC_ADDRESS_LENGTH];
         if (fpr_client_host(node, host_mac, NULL, 0) == ESP_OK) {
             _peers_lock(node);
-            FPR_STORE_HASH_TYPE *host_peer = _peer_from_map(node, host_mac);
-            if (host_peer && host_peer->is_connected) {
+            FPR_PEER_TYPE *host_peer = _peer_from_map(node, host_mac);
+            if (host_peer && host_peer->state == FPR_PEER_STATE_CONNECTED) {
                 // keepalive send periodically
                 if ((int32_t)(now_ms - node->recon_keep_ms) >= (int32_t)keep_interval_ms) {
                     esp_err_t err = fpr_send_device_info(node, host_mac);
@@ -528,9 +531,9 @@ void _client_reconnect_step(fpr_node_t *node, uint32_t now_ms)
                 uint32_t timeout_ms = _power_interval(node, FPR_RECONNECT_TIMEOUT_MS);
                 if ((uint64_t)FPR_US_TO_MS(age_us) > timeout_ms) {
                     ESP_LOGW(TAG, "Host timed out (age %llu ms) - marking disconnected for reconnect", (unsigned long long)FPR_US_TO_MS(age_us));
-                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
+                                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
-            } else if (host_peer && !host_peer->is_connected &&
+            } else if (host_peer && host_peer->state != FPR_PEER_STATE_CONNECTED &&
                        host_peer->sec_state > FPR_SEC_STATE_NONE &&
                        host_peer->sec_state < FPR_SEC_STATE_ESTABLISHED) {
                 // Handshake stalled (e.g. the host's ACK was lost). Nothing
@@ -542,7 +545,7 @@ void _client_reconnect_step(fpr_node_t *node, uint32_t now_ms)
                 if ((uint64_t)FPR_US_TO_MS(age_us) > timeout_ms) {
                     ESP_LOGW(TAG, "Handshake with host stalled in state %d - resetting",
                              host_peer->sec_state);
-                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
+                                    _reset_peer_connection(host_peer, FPR_PEER_STATE_DISCOVERED);
                 }
             }
             _peers_unlock(node);

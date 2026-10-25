@@ -22,7 +22,7 @@ typedef struct {
     fpr_package_t decoded;         /* codec output — this stack copy is
                                     * the only packet the handler reads */
     const fpr_package_t *package;  /* == &decoded */
-    fpr_connect_t control;
+    fpr_hello_t control;
     bool is_control;   /* package->id == FPR_PACKET_ID_CONTROL */
     bool is_broadcast; /* frame destination is the broadcast MAC */
 } fpr_rx_ctx_t;

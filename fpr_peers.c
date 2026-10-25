@@ -14,16 +14,13 @@
 
 static const char *TAG = "fpr_peers";
 
-#define FPR_REQUIRE_NODE(n) \
-    ESP_RETURN_ON_FALSE((n) != NULL, ESP_ERR_INVALID_ARG, TAG, "Node is NULL")
 
 /* Same wire bound as fpr_send.c — catches -1 widened through size_t. */
-#define FPR_BUF_SIZE_MAX 65535u
 
 /* queued_packets is written by the rx path under peers_lock; the
  * blocking reader holds only a store reference, so the decrement
  * must take the lock too or the counter desyncs from the real queue. */
-static void _peer_dec_queued(fpr_node_t *node, FPR_STORE_HASH_TYPE *peer)
+static void _peer_dec_queued(fpr_node_t *node, FPR_PEER_TYPE *peer)
 {
     _peers_lock(node);
     if (peer->queued_packets > 0) {
@@ -57,7 +54,7 @@ esp_err_t fpr_peer_count(fpr_node_t *node, size_t *out)
 }
 
 typedef struct {
-    FPR_STORE_HASH_TYPE **stores;
+    FPR_PEER_TYPE **stores;
     size_t cap;
     size_t n;
 } _peer_snapshot_ctx_t;
@@ -70,7 +67,7 @@ static void _peer_snapshot_cb(void *key, void *value, void *user_data)
 {
     (void)key;
     _peer_snapshot_ctx_t *ctx = (_peer_snapshot_ctx_t *)user_data;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     if (peer != NULL && ctx->n < ctx->cap) {
         peer->refcount++;
         ctx->stores[ctx->n++] = peer;
@@ -90,7 +87,7 @@ esp_err_t fpr_foreach_peer(fpr_node_t *node, fpr_peer_cb_t callback, void *user,
         _peers_unlock(node);
         return ESP_OK;
     }
-    FPR_STORE_HASH_TYPE **stores =
+    FPR_PEER_TYPE **stores =
         heap_caps_calloc(n, sizeof(*stores), MALLOC_CAP_DEFAULT);
     if (stores == NULL) {
         _peers_unlock(node);
@@ -118,7 +115,7 @@ esp_err_t fpr_peer_lookup(fpr_node_t *node, const uint8_t *peer_mac, fpr_peer_in
     FPR_REQUIRE_NODE(node);
     ESP_RETURN_ON_FALSE(peer_mac != NULL && info != NULL, ESP_ERR_INVALID_ARG, TAG, "Invalid arguments");
     
-    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_lookup_locked(node, peer_mac);
     if (peer == NULL) {
         _peers_unlock(node);
         ESP_LOGD(TAG, "Peer not found");
@@ -159,7 +156,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
     FPR_REQUIRE_NODE(node);
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     ESP_RETURN_ON_FALSE(data != NULL && data_size > 0 &&
-                        data_size <= FPR_BUF_SIZE_MAX, ESP_ERR_INVALID_ARG,
+                        data_size <= FPR_DATA_SIZE_MAX, ESP_ERR_INVALID_ARG,
                         TAG, "Invalid buffer");
     const TickType_t timeout = (timeout_ms == UINT32_MAX)
                                    ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
@@ -167,10 +164,10 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
      * (possibly blocking) receive — holding it would starve the RX path
      * that fills the queue. The reference keeps the store and its queue
      * alive even if the peer is removed concurrently. */
-    FPR_STORE_HASH_TYPE *peer = _peer_store_acquire(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_store_acquire(node, peer_mac);
     esp_err_t result = ESP_ERR_NOT_FOUND;
     if (peer) {
-        const size_t CHUNK_CAP = sizeof(((fpr_package_t *)0)->protocol);
+        const size_t CHUNK_CAP = sizeof(((fpr_package_t *)0)->payload);
         fpr_package_t pkg;
         size_t offset = 0;
         bool expecting_more = false;
@@ -189,7 +186,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
             if (timeout != portMAX_DELAY && timeout < slice) {
                 slice = timeout;
             }
-            if (xQueueReceive(peer->response_queue, &pkg, slice) != pdPASS) {
+            if (xQueueReceive(peer->rx_queue, &pkg, slice) != pdPASS) {
                 if (timeout != portMAX_DELAY) {
                     waited += slice;
                     if (waited >= timeout) {
@@ -209,7 +206,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
 
             switch (pkg.package_type) {
                 case FPR_PACKAGE_TYPE_SINGLE:
-                    memcpy(data, &pkg.protocol, copy_size);
+                    memcpy(data, &pkg.payload, copy_size);
                     // Decrement queued packet count (complete packet consumed)
                     _peer_dec_queued(node, peer);
                     result = ESP_OK;
@@ -222,7 +219,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
                     offset = 0;
                     expecting_more = true;
                     copy_size = ((size_t)data_size < actual_payload) ? (size_t)data_size : actual_payload;
-                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    memcpy((uint8_t*)data + offset, &pkg.payload, copy_size);
                     offset += copy_size;
                     break;
     
@@ -230,7 +227,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
                     if (!expecting_more) {
                         continue; // out of order, skip
                     }
-                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    memcpy((uint8_t*)data + offset, &pkg.payload, copy_size);
                     offset += copy_size;
                     break;
     
@@ -242,7 +239,7 @@ esp_err_t fpr_recv_from(fpr_node_t *node, const uint8_t *peer_mac, void *data,
                         _peer_dec_queued(node, peer);
                         continue; // out of order, skip
                     }
-                    memcpy((uint8_t*)data + offset, &pkg.protocol, copy_size);
+                    memcpy((uint8_t*)data + offset, &pkg.payload, copy_size);
                     offset += copy_size;
                     // Decrement queued packet count (complete multi-packet consumed)
                     _peer_dec_queued(node, peer);
@@ -275,7 +272,7 @@ esp_err_t fpr_set_peer_queue_mode(fpr_node_t *node, const uint8_t *peer_mac, fpr
                         mode == FPR_QUEUE_MODE_LATEST_ONLY,
                         ESP_ERR_INVALID_ARG, TAG, "Invalid queue mode %d", (int)mode);
 
-    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_lookup_locked(node, peer_mac);
     if (peer) {
         peer->queue_mode = mode;
         _peers_unlock(node);
@@ -293,7 +290,7 @@ esp_err_t fpr_peer_queued_packets(fpr_node_t *node, const uint8_t *peer_mac, uin
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
     ESP_RETURN_ON_FALSE(out != NULL, ESP_ERR_INVALID_ARG, TAG, "Output is NULL");
 
-    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_lookup_locked(node, peer_mac);
     *out = peer ? peer->queued_packets : 0;
     _peers_unlock(node);
     return ESP_OK;
@@ -308,7 +305,7 @@ typedef struct {
 static void _peer_by_name_cb(void *key, void *value, void *user_data)
 {
     (void)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     peer_name_search_ctx_t *ctx = (peer_name_search_ctx_t *)user_data;
     
     if (peer && !ctx->found) {
@@ -346,7 +343,7 @@ static void _peer_clear_cb(void *key, void *value, void *user_data)
 {
     fpr_node_t *node = (fpr_node_t *)user_data;
     const uint8_t *mac = (const uint8_t *)key;
-    FPR_STORE_HASH_TYPE *peer = (FPR_STORE_HASH_TYPE *)value;
+    FPR_PEER_TYPE *peer = (FPR_PEER_TYPE *)value;
     
     if (peer) {
         // Remove from the transport peer table
@@ -390,7 +387,7 @@ esp_err_t fpr_peer_ping(fpr_node_t *node, const uint8_t *peer_mac, uint32_t time
     FPR_REQUIRE_NODE(node);
     ESP_RETURN_ON_FALSE(peer_mac != NULL, ESP_ERR_INVALID_ARG, TAG, "Peer MAC is NULL");
 
-    FPR_STORE_HASH_TYPE *peer = _peer_lookup_locked(node, peer_mac);
+    FPR_PEER_TYPE *peer = _peer_lookup_locked(node, peer_mac);
     if (peer == NULL) {
         _peers_unlock(node);
         ESP_LOGW(TAG, "Peer not found in peer map");

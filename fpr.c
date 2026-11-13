@@ -416,9 +416,17 @@ esp_err_t fpr_start(fpr_node_t *node)
 
     /* A node that never picked a mode comes up as a CLIENT — modeless
      * started nodes have no RX handler and would silently drop frames.
-     * An explicit fpr_set_mode() before start is honored. */
+     * An explicit fpr_set_mode() before start is honored. The implicit
+     * set_mode result must propagate: it partially applies on failure
+     * (broadcast peer / PWK setup), and a "started" node whose setup
+     * failed can never announce or complete a connection. */
     if (node->current_mode == FPR_MODE_DEFAULT) {
-        fpr_set_mode(node, FPR_MODE_CLIENT);
+        const esp_err_t mode_err = fpr_set_mode(node, FPR_MODE_CLIENT);
+        if (mode_err != ESP_OK) {
+            ESP_LOGE(TAG, "implicit CLIENT mode setup failed: %s",
+                     esp_err_to_name(mode_err));
+            return mode_err;
+        }
     }
 
     _peers_lock(node);
